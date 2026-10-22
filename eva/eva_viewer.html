@@ -1,0 +1,2916 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
+  #container { width: 100vw; height: 100vh; background: transparent; }
+</style>
+</head>
+<body>
+<div id="container"></div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./libs/three.module.js",
+    "three/addons/": "./libs/jsm/",
+    "three/examples/jsm/": "./libs/jsm/",
+    "@pixiv/three-vrm": "./libs/three-vrm.module.js",
+    "@pixiv/three-vrm-animation": "./libs/three-vrm-animation.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { createVRMAnimationClip, VRMAnimationLoaderPlugin } from '@pixiv/three-vrm-animation';
+// FBX-загрузчик для анимаций Mixamo (той же версии, что и локальный Three.js 0.160)
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+// ---------------------------------------------------------------------
+// ВЕРСИЯ ДЛЯ САЙТА: все движения Евы упакованы в один файл eva_pack.bin
+// (делает _dev_tools\pack_site_eva). Отдельных файлов анимаций на сайте нет.
+// ---------------------------------------------------------------------
+import { unzlibSync } from 'three/addons/libs/fflate.module.js';
+const EVA_PACK = (async () => {
+  const buf = new Uint8Array(await (await fetch('./eva_pack.bin')).arrayBuffer());
+  if (new TextDecoder().decode(buf.subarray(0, 8)) !== 'EVAPACK1') throw new Error('eva_pack.bin: не тот файл');
+  const all = unzlibSync(buf.subarray(8));
+  const hl = new DataView(all.buffer, all.byteOffset).getUint32(0, true);
+  const head = JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + hl)));
+  return { head, body: all.subarray(4 + hl), urls: {} };
+})();
+const packKey = (url) => decodeURIComponent(String(url).replace(/^\.\/vrma\//, ''));
+const packF32 = (P, [at, len]) => new Float32Array(P.body.buffer.slice(P.body.byteOffset + at, P.body.byteOffset + at + len));
+async function packAsset(url) {
+  const P = await EVA_PACK, e = P.head.fbx[packKey(url)];
+  if (!e) throw new Error('нет в пакете: ' + packKey(url));
+  const objs = e.nodes.map((n) => { const o = new THREE.Object3D(); o.name = n[0];
+    o.position.fromArray(n, 2); o.quaternion.fromArray(n, 5); o.scale.fromArray(n, 9); return o; });
+  e.nodes.forEach((n, i) => { if (n[1] >= 0) objs[n[1]].add(objs[i]); });
+  const root = objs[0];
+  const K = { q: THREE.QuaternionKeyframeTrack, v: THREE.VectorKeyframeTrack, n: THREE.NumberKeyframeTrack };
+  root.animations = e.anims.map((a) => new THREE.AnimationClip(a.name, a.d,
+    a.tr.map((t) => new K[t.k](t.n, packF32(P, t.t), packF32(P, t.x)))));
+  root.updateMatrixWorld(true);
+  return root;
+}
+async function packURL(key) {
+  const P = await EVA_PACK; key = packKey(key);
+  if (!P.urls[key]) { const r = P.head.raw[key]; if (!r) throw new Error('нет в пакете: ' + key);
+    P.urls[key] = URL.createObjectURL(new Blob([P.body.slice(r[0], r[0] + r[1])])); }
+  return P.urls[key];
+}
+
+// =====================================================================
+// НАСТРОЙКИ (можно менять)
+// =====================================================================
+const VRM_MODEL_PATH = './eva_model_new.vrm';   // новая Ева из VRoid Studio (старая: eva_model.vrm)
+const VRMA_FOLDER = './vrma/';
+
+// Постоянные анимации по состояниям (циклы). Если файла нет - играется
+// спокойная поза ожидания, которую Ева создаёт сама.
+// Можно указывать и .vrma, и .fbx из Mixamo (скачанные «Without Skin»).
+const STATE_ANIM = {
+  idle:      'Breathing Idle.fbx',
+  listening: 'anim/idle/Standing Idle.fbx',
+  thinking:  'Thinking.fbx',
+  speaking:  'Talking.fbx',
+};
+
+// ВНИМАНИЕ: в паке VRoid (booth 5512385) НЕТ зацикленных анимаций - все 7 файлов
+// разовые жесты. Не переименовывай их в idle.vrma: VRMA_01 и VRMA_05 содержат
+// поворот на 360°, Ева будет крутиться по кругу. Пока своих циклов нет -
+// для состояний играет процедурная поза ожидания (buildIdleClip).
+//   VRMA_01 показ себя (оборот 360°)   VRMA_02 приветствие (начинается сидя!)
+//   VRMA_03 знак мира                  VRMA_04 «пистолетик» пальцами
+//   VRMA_05 кружится                   VRMA_06 модельная поза
+//   VRMA_07 приседания
+
+// Разовые жесты (играют один раз и возвращаются в позу ожидания).
+// from/to - какой кусок файла играть (секунды). Обрезка нужна, потому что
+// исходные жесты длинные и с лишним началом.
+const SHOTS = {
+  // приветствие: первые ~2.2 с Ева сидит на корточках - отрезаем, берём только взмах рукой
+  greeting: { file: 'VRMA_02.vrma', from: 2.3, to: 5.5 },
+  // знак мира: в оригинале рука держится 9 секунд - оставляем ~3.5 с
+  joy:      { file: 'VRMA_03.vrma', from: 0.0, to: 3.6 },
+  // «пистолетик» - игривый жест на эмоцию fun
+  fun:      { file: 'VRMA_04.vrma', from: 0.5, to: 4.2 },
+};
+const SHOT_COOLDOWN = { greeting: 6, joy: 25, fun: 30 }; // не чаще, чем раз в N секунд
+
+// ЖЕСТЫ ПО ПРОСЬБЕ («Ева, помаши», «похлопай», «покружись»...). Ключ присылает Python (avatar3d.py),
+// из списка берётся случайный вариант. Играют до конца, их не перебивают бытовые жесты.
+const COMMAND_GESTURES = {
+  wave:     ['anim/hello/Waving.fbx', 'anim/hello/Waving 2.fbx', 'anim/hello/Standing Greeting.fbx', 'shot:greeting'],
+  clap:     ['anim/emotion/Clapping.fbx'],
+  victory:  ['anim/emotion/Victory.fbx', 'rokoko/Cheer.fbx'],
+  peace:    ['shot:joy'],                        // знак мира (два пальца)
+  finger_gun: ['shot:fun'],                      // «пистолетик» пальцами
+  nod:      ['anim/listen/Head Nod Yes.fbx', 'anim/listen/hard head nod.fbx', 'anim/listen/Lengthy Head Nod.fbx'],
+  no:       ['anim/emotion/Shaking Head No.fbx', 'anim/emotion/annoyed head shake.fbx'],
+  laugh:    ['anim/emotion/Laughing.fbx'],
+  stretch:  ['anim/idle/Arm Stretching.fbx'],
+  yawn:     ['anim/idle/Yawn.fbx'],
+  look_around: ['rokoko/Looking around #1.fbx', 'anim/idle/look away gesture.fbx'],
+  wag_finger: ['rokoko/Finger Taunt.fbx'],       // погрозить / показать пальцем
+  angry:    ['anim/emotion/angry gesture.fbx'],
+  sigh:     ['anim/idle/relieved sigh.fbx'],
+  bored:    ['anim/idle/Bored.fbx'],
+  agree:    ['anim/listen/Agreeing.fbx', 'anim/listen/Acknowledging.fbx'],
+  dismiss:  ['anim/talk/dismissing gesture.fbx'],
+  proud:    ['anim/talk/being cocky.fbx'],
+  think:    ['anim/think/Thoughtful Head Shake.fbx'],
+  sad:      ['anim/emotion/Sad Idle.fbx'],
+  show_off: ['VRMA_01.vrma'],                    // показать себя, поворот на 360°
+  spin:     ['VRMA_05.vrma'],                    // покружиться
+  pose:     ['VRMA_06.vrma'],                    // модельная поза
+  exercise: ['VRMA_07.vrma'],                    // зарядка
+};
+
+// =====================================================================
+// РЕЖИССЁР АНИМАЦИЙ: в каждом состоянии несколько циклов и жестов,
+// выбираются СЛУЧАЙНО и без повтора подряд. Файлы - в vrma/anim/<группа>/.
+// 'shot:имя' - кусок из SHOTS (VRMA). Чего нет на диске - пропускается.
+// Анимаций с предметами в руках (Typing, Texting) нет: без предметов они смотрятся странно.
+// =====================================================================
+const ANIM = {
+  loops: {
+    // убраны по просьбе: Weight Shift, Happy Idle, Having A Meeting, Looking Around (обе)
+    idle:      ['Breathing Idle.fbx', 'anim/idle/Idle.fbx', 'anim/idle/Standing Idle.fbx'],
+    listening: ['anim/idle/Standing Idle.fbx', 'anim/idle/Idle.fbx'],
+    thinking:  ['Thinking.fbx', 'anim/think/Thoughtful Head Shake.fbx'],
+    searching: ['Thinking.fbx', 'anim/think/Thoughtful Head Shake.fbx'],
+    speaking:  ['Talking.fbx', 'anim/talk/Talking 2.fbx', 'anim/talk/Talking 3.fbx'],
+  },
+  hold: { idle: [18, 40], listening: [10, 20], thinking: [5, 9], searching: [6, 12], speaking: [5, 10] },
+  fidgets: {
+    idle:      { every: [9, 22], chance: 0.55, pool: ['anim/idle/Bored.fbx', 'anim/idle/Arm Stretching.fbx',
+                 'anim/idle/Yawn.fbx', 'anim/idle/look away gesture.fbx', 'anim/idle/relieved sigh.fbx',
+                 'rokoko/Looking around #1.fbx'] },
+    listening: { every: [3, 7], chance: 0.5, pool: ['anim/listen/Head Nod Yes.fbx', 'anim/listen/Lengthy Head Nod.fbx',
+                 'anim/listen/Acknowledging.fbx', 'anim/listen/hard head nod.fbx', 'anim/listen/Agreeing.fbx'] },
+    speaking:  { every: [4, 9], chance: 0.35, pool: ['anim/talk/happy hand gesture.fbx', 'anim/listen/Agreeing.fbx',
+                 'anim/talk/dismissing gesture.fbx', 'anim/talk/sarcastic head nod.fbx'] },
+  },
+  emotion: {
+    joy:      ['shot:joy', 'anim/emotion/Clapping.fbx', 'anim/emotion/Victory.fbx',
+               'anim/talk/happy hand gesture.fbx', 'anim/emotion/Laughing.fbx', 'rokoko/Cheer.fbx'],
+    fun:      ['shot:fun', 'anim/emotion/Laughing.fbx', 'anim/talk/being cocky.fbx', 'anim/talk/sarcastic head nod.fbx',
+               'rokoko/Finger Taunt.fbx'],
+    sorrow:   ['anim/emotion/Sad Idle.fbx', 'anim/idle/relieved sigh.fbx', 'anim/emotion/Shaking Head No.fbx'],
+    angry:    ['anim/emotion/angry gesture.fbx', 'anim/emotion/annoyed head shake.fbx'],
+    surprised:['anim/idle/look away gesture.fbx'],
+  },
+  emotionCooldown: 12,
+  greeting: ['shot:greeting', 'anim/hello/Standing Greeting.fbx', 'anim/hello/Waving.fbx', 'anim/hello/Waving 2.fbx'],
+  longClip: 12,   // циклы длиннее (с) начинаются со случайного места
+};
+
+// Физика волос (Spring Bone). null = как в модели (VRoid: жёсткость ~0.8,
+// гравитация 0 - при спокойной позе волосы почти не двигаются).
+// Значения применяются ТОЛЬКО к костям волос (HairJoint-*), грудь/капюшон не трогаем.
+const HAIR = { stiffness: 0.45, dragForce: 0.3, gravityPower: 0.08 };
+
+// ?viewer=1 - режим просмотра анимаций (anim_viewer.py): панель, мышь, без режиссёра
+const VIEWER = new URLSearchParams(location.search).has('viewer');
+const FACE_CAM = new URLSearchParams(location.search).has('facecam');
+// ДИАГНОСТИКА МЕРЦАНИЯ: пишет в лог [РЫВОК] (поза дёрнулась) и [ЗАДЕРЖКА] (кадр рисовался слишком долго).
+// Мерцание починено (волосы после подвисания кадра). Включить снова: ?jumpdebug=1 или true здесь.
+const JUMP_DEBUG = false || new URLSearchParams(location.search).has('jumpdebug');
+const DEBUG_FRAMES = false;
+const LOG_ANIM = true;       // писать в лог окна аватара, какая анимация сейчас играет
+const FADE = 0.4; // секунды плавного перехода между анимациями
+const SHOT_RETURN = 0.8; // секунды возврата из жеста в позу ожидания
+
+// Поза ожидания (пока нет idle.vrma). POSE: 'crossed' = руки скрещены + ноги крест-накрест,
+// 'hands_front' = руки спокойно перед собой.
+// Если что-то выглядит не так - меняй знак у нужного числа и перезапускай.
+// 'relaxed' = руки свободно опущены вдоль тела (обычная поза ожидания).
+const POSE = 'relaxed';
+
+// --- поза 'relaxed' ---
+// Если руки «входят» в кофту - увеличь down чуть МЕНЬШЕ (1.15), если торчат в стороны - больше (1.3).
+const RELAX = {
+  down: 1.22,     // насколько опущены руки (1.57 = строго вниз)
+  fwd: 0.08,      // руки чуть вперёд
+  elbow: 0.25,    // лёгкий сгиб локтей
+  wrist: 0.12,    // кисти слегка внутрь
+};
+
+// --- поза 'hands_front' ---
+const ARM_DOWN = 1.3;      // насколько опущены руки
+const ELBOW_BEND = 0.9;    // изгиб локтей
+const ARM_FORWARD = 0.3;   // руки чуть вперёд
+const HANDS_IN = 0.1;     // кисти к центру
+
+// --- поза 'crossed' (руки скрещены на груди) ---
+const CROSS = {
+  down: 1.25,       // насколько опущены плечи/руки (больше = локти ниже)
+  fwdL: 0.55,       // левая рука вперёд (левая лежит сверху)
+  fwdR: 0.30,       // правая рука вперёд
+  bendL: 2.1,       // сгиб левого локтя
+  bendR: 1.9,       // сгиб правого локтя
+  roll: -1.0,       // куда уходят предплечья: к центру. Если руки разошлись В СТОРОНЫ - поставь +1.0
+};
+
+// --- ноги: вес на левой ноге, правая закинута перед ней ---
+const LEGS = {
+  crossZ: -0.22,    // правая нога к центру (минус = через центр). Если уходит наружу - поставь +0.22
+  crossX: 0.18,     // правая нога вперёд
+  knee: -0.15,      // сгиб колена правой ноги
+  foot: -0.30,      // носок правой ноги вниз
+  standZ: 0.05,     // левая (опорная) нога чуть к центру
+  hipTilt: -0.04,   // таз чуть наклонён (перенос веса)
+};
+
+// Камера. SHOW_FRACTION: 1.0 = Ева в полный рост, 0.5 = по пояс, 0.35 = по грудь.
+const CAM = { fov: 30, SHOW_FRACTION: 1.0, MARGIN: 1.12, Y_SHIFT: 0.0,
+              HEADROOM: 0.25,   // запас над головой (доля роста) - для поднятых рук. Больше = Ева меньше
+              FLOOR: 0.04 };    // запас под ногами (доля роста)
+
+const MORPH_SPEED = 10.0;
+const BLINK_SPEED = 30.0;
+
+// Старые имена морфов (шлёт avatar3d.py) -> выражения VRM
+const MORPH_MAP = {
+  MTH_A: { expr: 'aa', scale: 1.0 },
+  MTH_I: { expr: 'ih', scale: 1.0 },
+  MTH_U: { expr: 'ou', scale: 1.0 },
+  MTH_E: { expr: 'ee', scale: 1.0 },
+  MTH_O: { expr: 'oh', scale: 1.0 },
+  EYE_Close:   { expr: 'blink',      scale: 1.0 },
+  EYE_Close_L: { expr: 'blinkLeft',  scale: 1.0 },
+  EYE_Close_R: { expr: 'blinkRight', scale: 1.0 },
+  ALL_Joy:       { expr: 'happy',     scale: 1.0 },
+  ALL_Fun:       { expr: 'relaxed',   scale: 1.0 },
+  ALL_Angry:     { expr: 'angry',     scale: 0.8 },
+  ALL_Sorrow:    { expr: 'sad',       scale: 1.0 },
+  ALL_Surprised: { expr: 'surprised', scale: 1.0 },
+};
+
+// =====================================================================
+// СЦЕНА
+// =====================================================================
+const container = document.getElementById('container');
+const scene = new THREE.Scene();
+// СТУДИЯ (?studio=1): съёмка промо. Картинка рисуется в точном размере видео (по умолчанию 1080×1920,
+// вертикаль), окно показывает её уменьшенной. Фон: stage - красивая сцена, green - зелёный (хромакей).
+const _qst = new URLSearchParams(location.search);
+// УРОВЕНЬ ГРАФИКИ (панель → Настройки → «Графика Евы»; приходит адресом ?gfx=...).
+//   pr - чёткость (доля от плотности экрана), aa - сглаживание краёв, pro - «дорогой» свет/контур/тень,
+//   calm/active - кадров в секунду в покое и в движении.
+const GFX_LEVELS = {
+  ultra:  { pr: 1.5,  aa: true,  pro: true,  calm: 30, active: 60 },
+  high:   { pr: 1.0,  aa: true,  pro: true,  calm: 30, active: 45 },
+  medium: { pr: 1.0,  aa: true,  pro: false, calm: 30, active: 40 },
+  low:    { pr: 0.75, aa: false, pro: false, calm: 24, active: 30 },
+};
+const GFX = GFX_LEVELS[_qst.get('gfx')] ? _qst.get('gfx') : 'ultra';
+const GFX_CFG = GFX_LEVELS[GFX];
+console.log('Графика: ' + GFX);
+const INTRO = _qst.has('intro');      // Ева ещё не «вошла»: прячем, пока окно не начнёт появление
+const STUDIO = _qst.has('studio') ? { w: +(_qst.get('w') || 1080), h: +(_qst.get('h') || 1920),
+                                     bg: _qst.get('bg') || 'stage', fps: 30 } : null;
+const camera = new THREE.PerspectiveCamera(CAM.fov, STUDIO ? STUDIO.w / STUDIO.h : window.innerWidth / window.innerHeight, 0.01, 100);
+
+const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: STUDIO ? true : GFX_CFG.aa,
+                                          powerPreference: GFX === 'low' ? 'low-power' : 'default' });
+if (STUDIO) {
+  renderer.setPixelRatio(1);
+  renderer.setSize(STUDIO.w, STUDIO.h, false);
+  const fit = () => {                       // вписать картинку в окно, сохранив пропорции
+    const k = Math.min(innerWidth / STUDIO.w, innerHeight / STUDIO.h);
+    Object.assign(renderer.domElement.style, { width: STUDIO.w * k + 'px', height: STUDIO.h * k + 'px',
+      position: 'absolute', left: (innerWidth - STUDIO.w * k) / 2 + 'px', top: (innerHeight - STUDIO.h * k) / 2 + 'px' });
+  };
+  fit(); addEventListener('resize', fit);
+  document.body.style.background = '#000';
+} else {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, GFX_CFG.pr));   // 2 - слишком тяжело для прозрачного окна
+}
+renderer.setClearColor(STUDIO && STUDIO.bg === 'green' ? 0x00ff00 : 0x000000, STUDIO && STUDIO.bg === 'green' ? 1 : 0);
+// LOOK: 'anime' - правильный свет для аниме-шейдера MToon (как в VRoid Studio/VSeeFace);
+//       'old'   - прежний «киношный» (ACES), цвета выцветают. Для сравнения: ?look=old
+// LOOK: 'pro' - «дорогой» вид (контровой свет, цветные тени, контур, свет с трёх сторон, мягкая контактная тень);
+//       'anime' - прежний простой вид; 'old' - самый старый. Для сравнения: ?look=anime
+const LOOK = new URLSearchParams(location.search).get('look') || (GFX_CFG.pro || STUDIO ? 'pro' : 'anime');
+// свет и цвет вида «pro» (можно подкрутить; для проверки - через адрес: ?k=0.6&sat=1.2)
+const _q = new URLSearchParams(location.search);
+const LIGHT = {
+  key: +(_q.get('k') || 0.58),          // основной свет (доля от π). Больше - светлее
+  fill: +(_q.get('f') || 0.15),        // заполняющий слева
+  back: +(_q.get('b') || 0.6),         // контровой сзади
+  ambient: +(_q.get('a') || 0.13),     // общий свет. Больше - белёсее
+  saturation: +(_q.get('sat') || 1.25),// насыщенность цвета (1 - как есть)
+  contrast: +(_q.get('con') || 1.08),  // контраст (1 - как есть)
+};
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+if (LOOK === 'old') {
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+} else {
+  renderer.toneMapping = THREE.NoToneMapping;          // MToon сам рассчитан на «плоский» вывод
+}
+container.appendChild(renderer.domElement);
+
+// ---- здоровье окна: если видеокарта не подключилась или «отвалилась» - просим Python перезагрузить окно
+(function gpuCheck() {
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const info = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    console.log('Видеокарта: ' + info);
+    if (/swiftshader|basic render|llvmpipe|software/i.test(info))
+      console.log('[ОКНО] видеокарта не подключилась (программный режим) - нужен перезапуск окна');
+  } catch (e) { console.log('Видеокарта: не удалось узнать (' + e + ')'); }
+  renderer.domElement.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    console.log('[ОКНО] видеокарта потеряна - нужен перезапуск окна');
+  });
+})();
+const _stalls = [];          // моменты сильных подвисаний кадров
+let _stallReported = -999;
+
+if (LOOK === 'old') {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const keyLight = new THREE.DirectionalLight(0xfff5e8, 1.8); keyLight.position.set(1, 1.5, 2); scene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(0xaaccff, 0.6); fillLight.position.set(-2, 0.5, 1); scene.add(fillLight);
+  const rimLight = new THREE.DirectionalLight(0xffd9aa, 1.2); rimLight.position.set(-1, 1.5, -2); scene.add(rimLight);
+} else if (LOOK === 'pro') {
+  // свет как в студии: основной спереди-сбоку, слабый заполняющий слева, контровой сзади (обводит силуэт).
+  // Света НЕ много: пересвет делает аниме-шейдер белёсым («как пудрой»).
+  const key = new THREE.DirectionalLight(0xffffff, Math.PI * LIGHT.key); key.position.set(0.9, 1.7, 2.0); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xd8e2ff, LIGHT.fill); fill.position.set(-1.6, 0.9, 1.2); scene.add(fill);
+  const back = new THREE.DirectionalLight(0xfff0e0, LIGHT.back); back.position.set(-0.7, 1.9, -2.2); scene.add(back);
+  scene.add(new THREE.AmbientLight(0xffffff, LIGHT.ambient));
+  // цветокоррекция: сочнее и чуть контрастнее (как в аниме)
+  renderer.domElement.style.filter = `saturate(${LIGHT.saturation}) contrast(${LIGHT.contrast})`;
+} else {
+  // один основной свет чуть сбоку-сверху (даёт аккуратную аниме-тень) + мягкий общий
+  const keyLight = new THREE.DirectionalLight(0xffffff, Math.PI * 0.9); keyLight.position.set(0.8, 1.6, 2.0); scene.add(keyLight);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+}
+
+// =====================================================================
+// «ДОРОГОЙ» ВИД (LOOK = 'pro'): настройки аниме-шейдера MToon поверх того, что выгрузил VRoid
+// (у VRoid по умолчанию нет контрового света, у волос нет теней, контур почти невидим)
+// =====================================================================
+const PRO = {
+  rim:      [+(_q.get('r') || 0.12), +(_q.get('r') || 0.12), +(_q.get('r') || 0.12) * 1.2],   // контровая обводка (слабая - иначе белёсо)
+  rimPower: 5.5,                   // ширина обводки: меньше - шире
+  rimMix:   0.8,                   // 0 - светится всегда, 1 - только там, где есть свет
+  faceRim:  0.35,                  // на лице обводка слабее (доля)
+  hairShade:  [0.72, 0.60, 0.68],  // цвет тени на волосах (тёплый сиреневый, как в аниме)
+  clothShade: [0.74, 0.78, 0.90],  // цвет тени на одежде (холодный - видно складки на белом)
+  skinShade:  [0.97, 0.78, 0.82],  // тень на коже
+  outline:  0.0015,                // толщина контура (метры), было 0.0008
+  outlineColor: 0x2a1418,
+};
+function applyProLook(v) {
+  if (LOOK !== 'pro') return;
+  let n = 0;
+  v.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) {
+      if (!m || !m.isMToonMaterial) continue;
+      const name = m.name || '';
+      const face = /FACE|EYE/.test(name);
+      if (m.parametricRimColorFactor) {
+        const k = /SKIN/.test(name) && /Face/.test(name) ? PRO.faceRim : face ? 0 : /HAIR/.test(name) ? 0.7 : 1;
+        m.parametricRimColorFactor.setRGB(PRO.rim[0] * k, PRO.rim[1] * k, PRO.rim[2] * k);
+        m.parametricRimFresnelPowerFactor = PRO.rimPower;
+        m.parametricRimLiftFactor = 0;
+        m.rimLightingMixFactor = PRO.rimMix;
+      }
+      if (m.shadeColorFactor && !face) {
+        const c = /HAIR/.test(name) ? PRO.hairShade : /CLOTH/.test(name) ? PRO.clothShade : /SKIN/.test(name) ? PRO.skinShade : null;
+        if (c) m.shadeColorFactor.setRGB(c[0], c[1], c[2]);
+        if (/HAIR/.test(name)) { m.shadingShiftFactor = -0.05; m.shadingToonyFactor = 0.88; }
+      }
+      if (m.outlineWidthMode === 'worldCoordinates' && m.outlineWidthFactor > 0) {
+        m.outlineWidthFactor = PRO.outline;
+        m.outlineColorFactor && m.outlineColorFactor.setHex(PRO.outlineColor);
+        m.outlineLightingMixFactor = 0.6;
+      }
+      n++;
+    }
+  });
+  console.log('Вид «pro»: настроено материалов ' + n);
+}
+
+// ---- мягкая контактная тень под ногами (настоящая форма ног и тела, размытая)
+const CONTACT = { w: 1.1, d: 0.8, height: 0.55, res: 256, blur: 3.0, darkness: 3.0, opacity: 0.9 };
+const contact = { ready: false };
+function setupContactShadow() {
+  if (LOOK !== 'pro') return false;
+  const C = CONTACT;
+  contact.group = new THREE.Group();
+  scene.add(contact.group);
+  contact.rt = new THREE.WebGLRenderTarget(C.res, C.res); contact.rt.texture.generateMipmaps = false;
+  contact.rtBlur = new THREE.WebGLRenderTarget(C.res, C.res); contact.rtBlur.texture.generateMipmaps = false;
+  const plane = new THREE.PlaneGeometry(C.w, C.d).rotateX(Math.PI / 2);
+  contact.mesh = new THREE.Mesh(plane, new THREE.MeshBasicMaterial({ map: contact.rt.texture, transparent: true,
+    opacity: C.opacity, depthWrite: false }));
+  contact.mesh.renderOrder = -1;
+  contact.mesh.scale.y = -1;          // текстура снята снизу - переворачиваем
+  contact.group.add(contact.mesh);
+  contact.cam = new THREE.OrthographicCamera(-C.w / 2, C.w / 2, C.d / 2, -C.d / 2, 0, C.height);
+  contact.cam.rotation.x = Math.PI / 2;  // смотрит вверх, на ноги
+  contact.group.add(contact.cam);
+  contact.depth = new THREE.MeshDepthMaterial();
+  contact.depth.onBeforeCompile = (sh) => {
+    sh.uniforms.darkness = { value: C.darkness };
+    sh.fragmentShader = 'uniform float darkness;\n' + sh.fragmentShader.replace(
+      'gl_FragColor = vec4( vec3( 1.0 - fragCoordZ ), opacity );',
+      'gl_FragColor = vec4( vec3( 0.0 ), ( 1.0 - fragCoordZ ) * darkness );');
+  };
+  contact.depth.depthTest = false; contact.depth.depthWrite = false;
+  const blurMat = (dir) => new THREE.ShaderMaterial({
+    uniforms: { tDiffuse: { value: null }, d: { value: new THREE.Vector2() } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: `uniform sampler2D tDiffuse; uniform vec2 d; varying vec2 vUv;
+      void main(){ vec4 s = vec4(0.0);
+        s += texture2D(tDiffuse, vUv - 4.0*d) * 0.051; s += texture2D(tDiffuse, vUv - 3.0*d) * 0.0918;
+        s += texture2D(tDiffuse, vUv - 2.0*d) * 0.12245; s += texture2D(tDiffuse, vUv - d) * 0.1531;
+        s += texture2D(tDiffuse, vUv) * 0.1633;
+        s += texture2D(tDiffuse, vUv + d) * 0.1531; s += texture2D(tDiffuse, vUv + 2.0*d) * 0.12245;
+        s += texture2D(tDiffuse, vUv + 3.0*d) * 0.0918; s += texture2D(tDiffuse, vUv + 4.0*d) * 0.051;
+        gl_FragColor = s; }`,
+    depthTest: false, depthWrite: false });
+  contact.blurH = blurMat(); contact.blurV = blurMat();
+  contact.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), contact.blurH);
+  contact.quad.frustumCulled = false;
+  contact.quadScene = new THREE.Scene(); contact.quadScene.add(contact.quad);
+  contact.quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  contact.ready = true;
+  return true;
+}
+function blurContact(amount) {
+  const q = contact.quad, px = amount / CONTACT.res;
+  q.material = contact.blurH; contact.blurH.uniforms.tDiffuse.value = contact.rt.texture; contact.blurH.uniforms.d.value.set(px, 0);
+  renderer.setRenderTarget(contact.rtBlur); renderer.render(contact.quadScene, contact.quadCam);
+  q.material = contact.blurV; contact.blurV.uniforms.tDiffuse.value = contact.rtBlur.texture; contact.blurV.uniforms.d.value.set(0, px);
+  renderer.setRenderTarget(contact.rt); renderer.render(contact.quadScene, contact.quadCam);
+}
+function updateContactShadow() {
+  if (!contact.ready || !vrm) return;
+  const hips = vrm.humanoid.getNormalizedBoneNode('hips').getWorldPosition(new THREE.Vector3());
+  contact.group.position.set(hips.x, vrm.scene.position.y + 0.002, hips.z);
+  const bg = scene.background, ov = scene.overrideMaterial, vis = contact.mesh.visible;
+  const prevClear = renderer.getClearAlpha(), prevRT = renderer.getRenderTarget();
+  contact.mesh.visible = false; if (live.shadow) live.shadow.visible = false;
+  scene.background = null; scene.overrideMaterial = contact.depth;
+  renderer.setClearAlpha(0);
+  renderer.setRenderTarget(contact.rt); renderer.clear(); renderer.render(scene, contact.cam);
+  scene.overrideMaterial = ov;
+  blurContact(CONTACT.blur); blurContact(CONTACT.blur * 0.4);
+  renderer.setRenderTarget(prevRT); renderer.setClearAlpha(prevClear);
+  scene.background = bg; contact.mesh.visible = vis;
+}
+
+// =====================================================================
+// СОСТОЯНИЕ
+// =====================================================================
+let vrm = null;
+let mixer = null;
+const clock = new THREE.Clock();
+
+let idleClip = null;       // поза ожидания, созданная кодом
+let baseAction = null;     // текущая постоянная анимация
+let baseClip = null;
+let baseToken = 0;
+let shotAction = null;     // текущий разовый жест
+let prevState = 'idle';
+let prevEmotion = 'neutral';
+const lastShotTime = {};
+
+const morphSources = {};
+const exprCurrent = {};
+const exprResolved = {};
+let usedExprs = [];
+
+const loader = new GLTFLoader();
+loader.register((parser) => new VRMLoaderPlugin(parser));
+loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
+// =====================================================================
+// ЗАГРУЗКА МОДЕЛИ
+// =====================================================================
+loader.load(VRM_MODEL_PATH, (gltf) => {
+  vrm = gltf.userData.vrm;
+  if (!vrm) { console.error('Файл ' + VRM_MODEL_PATH + ' не является VRM'); return; }
+
+  try {
+    if (VRMUtils.removeUnnecessaryVertices) VRMUtils.removeUnnecessaryVertices(gltf.scene);
+    if (VRMUtils.combineSkeletons) VRMUtils.combineSkeletons(gltf.scene);
+    else if (VRMUtils.removeUnnecessaryJoints) VRMUtils.removeUnnecessaryJoints(gltf.scene);
+  } catch (e) { console.warn('Оптимизация пропущена: ' + e); }
+  VRMUtils.rotateVRM0(vrm);
+
+  vrm.scene.traverse((o) => { o.frustumCulled = false; });
+  scene.add(vrm.scene);
+  mixer = new THREE.AnimationMixer(vrm.scene);
+  mixer.addEventListener('finished', onShotFinished);
+  if (DEBUG_FRAMES) mixer.addEventListener('loop', (e) =>
+    console.log('[цикл] повтор: ' + e.action.getClip().name.replace('mixamo_', '')));
+
+  const names = Object.keys(vrm.expressionManager.expressionMap);
+  const lower = {};
+  names.forEach((n) => { lower[n.toLowerCase()] = n; });
+  const used = new Set();
+  for (const m of Object.values(MORPH_MAP)) {
+    const real = lower[m.expr.toLowerCase()];
+    exprResolved[m.expr] = real || null;
+    if (real) used.add(real);
+  }
+  usedExprs = [...used];
+
+  // рост бёдер Евы в исходной позе - нужен для переноса движений Mixamo
+  vrmHipsHeight = Math.abs(
+    vrm.humanoid.getNormalizedBoneNode('hips').getWorldPosition(new THREE.Vector3()).y -
+    vrm.scene.getWorldPosition(new THREE.Vector3()).y);
+
+  vrmHipsRest = vrm.humanoid.getNormalizedBoneNode('hips').position.clone();
+
+  setupCamera();
+  setupSpringBones();
+  buildBodyCollider();
+  setupLive();
+  setupFace();
+  applyProLook(vrm);
+  setupStudio();
+  if (setupContactShadow() && live.shadow) live.shadow.visible = false;   // вместо пятна - настоящая тень
+  idleClip = buildIdleClip();
+  baseClip = idleClip;
+  crossTo(idleClip, true); // сразу спокойная поза - без T-позы, пока грузятся анимации
+  exposeApi();
+  console.log('VRM модель загружена!');
+
+  // Подгружаем анимации заранее, чтобы не было задержки
+  // загружаем по одной: сначала простой, потом остальное
+  const all = [...ANIM.loops.idle, ...Object.values(ANIM.loops).flat(), ...Object.values(ANIM.fidgets).flatMap((f) => f.pool),
+               ...Object.values(ANIM.emotion).flat(), ...ANIM.greeting, ...Object.values(SHOTS).map((s) => s.file),
+               ...Object.values(COMMAND_GESTURES).flat()];
+  const files = [...new Set(all.filter((f) => !f.startsWith('shot:')))];
+  (async () => {
+    for (let i = 0; i < files.length; i++) {
+      await getClip(files[i]);
+      if (i === ANIM.loops.idle.length - 1) directorEnter(prevState);
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    console.log('Анимаций загружено: ' + files.filter((f) => clipCache[f]).length + ' из ' + files.length);
+    if (VIEWER) setupViewer();
+  })();
+}, undefined, (err) => {
+  console.error('Ошибка загрузки VRM: ' + err);
+});
+
+function setupCamera() {
+  const box = new THREE.Box3().setFromObject(vrm.scene);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+
+  const shownH = size.y * CAM.SHOW_FRACTION;
+  let centerY = box.max.y - shownH / 2 + size.y * CAM.Y_SHIFT;
+  let visibleH = shownH * CAM.MARGIN;
+  if (CAM.SHOW_FRACTION >= 1) {
+    // в полный рост: ноги у нижнего края, сверху место для рук
+    visibleH = size.y * (1 + CAM.FLOOR + CAM.HEADROOM);
+    centerY = box.min.y - size.y * CAM.FLOOR + visibleH / 2 + size.y * CAM.Y_SHIFT;
+  }
+  const dist = (visibleH / 2) / Math.tan(THREE.MathUtils.degToRad(CAM.fov / 2));
+
+  // Ева не по центру окна: слева от неё место для портала (?ex=0.6 - центр Евы на 60% ширины)
+  const ex = +(_qst.get('ex') || 0.5);
+  const camX = center.x - (ex - 0.5) * innerWidth * (visibleH / innerHeight);
+  camera.position.set(camX, centerY, center.z + dist);
+  camera.lookAt(camX, centerY, center.z);
+}
+
+// =====================================================================
+// ФИЗИКА ВОЛОС (Spring Bone)
+// =====================================================================
+let springResetPending = true; // сбросить физику после первой позы (иначе волосы «дёргаются» из T-позы)
+let springResetAt = null;
+
+function setupSpringBones() {
+  const sbm = vrm.springBoneManager;
+  if (!sbm || !sbm.joints) { console.warn('Spring Bone: в модели нет физики!'); return; }
+  let total = 0, hair = 0;
+  for (const j of sbm.joints) {
+    total++;
+    const name = (j.bone && j.bone.name) || '';
+    if (!name.startsWith('HairJoint')) continue;
+    hair++;
+    if (HAIR && j.settings) {
+      if (HAIR.stiffness != null) j.settings.stiffness = HAIR.stiffness;
+      if (HAIR.dragForce != null) j.settings.dragForce = HAIR.dragForce;
+      if (HAIR.gravityPower != null) j.settings.gravityPower = HAIR.gravityPower;
+    }
+  }
+  console.log('Spring Bone: суставов ' + total + ', из них волосы ' + hair +
+              (HAIR ? ' (настройки HAIR применены)' : ' (настройки модели)'));
+}
+
+// =====================================================================
+// ПОЗА ОЖИДАНИЯ КАК АНИМАЦИЯ (дыхание, покачивание, наклон головы)
+// =====================================================================
+function buildIdleClip() {
+  const DUR = 20, STEP = 0.25, N = Math.round(DUR / STEP);
+  const w = (k) => 2 * Math.PI * k / DUR; // k целое -> цикл без шва
+
+  const sway = (k, amp) => (t) => Math.sin(w(k) * t) * amp;
+  const tilt = POSE === 'crossed' ? LEGS.hipTilt : 0;
+  const common = {
+    hips:  (t) => [0, Math.sin(w(1) * t) * 0.03, tilt + Math.sin(w(2) * t) * 0.012],
+    spine: (t) => [0, Math.sin(w(2) * t) * 0.01, -tilt * 0.6],
+    chest: (t) => [Math.sin(w(5) * t) * 0.015, 0, 0],
+    head:  (t) => [Math.sin(w(1) * t) * 0.02, Math.sin(w(2) * t) * 0.04, 0.04 + Math.sin(w(1) * t + 1) * 0.02],
+  };
+  const legs = {
+    leftUpperLeg:  (t) => [0, 0, LEGS.standZ],
+    rightUpperLeg: (t) => [LEGS.crossX, 0, LEGS.crossZ],
+    leftLowerLeg:  (t) => [0, 0, 0],
+    rightLowerLeg: (t) => [LEGS.knee, 0, 0],
+    rightFoot:     (t) => [LEGS.foot, 0, 0],
+  };
+  const armsFront = {
+    leftShoulder:  (t) => [0, 0, 0.08],
+    rightShoulder: (t) => [0, 0, -0.08],
+    leftUpperArm:  (t) => [0, -ARM_FORWARD,  ARM_DOWN + sway(3, 0.015)(t)],
+    rightUpperArm: (t) => [0,  ARM_FORWARD, -ARM_DOWN - sway(3, 0.015)(t)],
+    leftLowerArm:  (t) => [0, -ELBOW_BEND, 0],
+    rightLowerArm: (t) => [0,  ELBOW_BEND, 0],
+    leftHand:      (t) => [0, 0,  HANDS_IN],
+    rightHand:     (t) => [0, 0, -HANDS_IN],
+  };
+  const armsCrossed = {
+    leftShoulder:  (t) => [0, 0, 0.05],
+    rightShoulder: (t) => [0, 0, -0.05],
+    leftUpperArm:  (t) => [0, -CROSS.fwdL,  CROSS.down + sway(3, 0.01)(t)],
+    rightUpperArm: (t) => [0,  CROSS.fwdR, -CROSS.down - sway(3, 0.01)(t)],
+    leftLowerArm:  (t) => [CROSS.roll, -CROSS.bendL, 0],
+    rightLowerArm: (t) => [CROSS.roll,  CROSS.bendR, 0],
+    leftHand:      (t) => [0, 0,  0.1],
+    rightHand:     (t) => [0, 0, -0.1],
+  };
+  const armsRelaxed = {
+    leftShoulder:  (t) => [0, 0, 0.04],
+    rightShoulder: (t) => [0, 0, -0.04],
+    leftUpperArm:  (t) => [0, -RELAX.fwd,  RELAX.down + sway(3, 0.02)(t)],
+    rightUpperArm: (t) => [0,  RELAX.fwd, -RELAX.down - sway(3, 0.02)(t)],
+    leftLowerArm:  (t) => [0, -RELAX.elbow - sway(4, 0.03)(t), 0],
+    rightLowerArm: (t) => [0,  RELAX.elbow + sway(4, 0.03)(t), 0],
+    leftHand:      (t) => [0, 0,  RELAX.wrist],
+    rightHand:     (t) => [0, 0, -RELAX.wrist],
+  };
+  let pose;
+  if (POSE === 'crossed') pose = { ...armsCrossed, ...legs, ...common };
+  else if (POSE === 'relaxed') pose = { ...armsRelaxed, ...common };
+  else pose = { ...armsFront, ...common };
+
+  const times = [];
+  for (let i = 0; i <= N; i++) times.push(i * STEP);
+
+  const tracks = [];
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  for (const [bone, fn] of Object.entries(pose)) {
+    const node = vrm.humanoid.getNormalizedBoneNode(bone);
+    if (!node) continue;
+    const values = [];
+    for (const t of times) {
+      const [x, y, z] = fn(t);
+      e.set(x, y, z, 'XYZ');
+      q.setFromEuler(e);
+      values.push(q.x, q.y, q.z, q.w);
+    }
+    tracks.push(new THREE.QuaternionKeyframeTrack(node.name + '.quaternion', times, values));
+  }
+  return new THREE.AnimationClip('eva_idle', DUR, tracks);
+}
+
+// =====================================================================
+// АНИМАЦИИ VRMA
+// =====================================================================
+const clipCache = {};
+async function getClip(file) {
+  if (file in clipCache) return clipCache[file];
+  if (file.toLowerCase().endsWith('.fbx')) {
+    try {
+      clipCache[file] = lockInPlace(await loadMixamoClip(VRMA_FOLDER + file.split('/').map(encodeURIComponent).join('/')));
+      console.log('Анимация Mixamo загружена: ' + file + ' (' + clipCache[file].duration.toFixed(1) + ' с)');
+    } catch (e) {
+      clipCache[file] = null;
+      console.warn('Не удалось загрузить ' + file + ': ' + e);
+    }
+    return clipCache[file];
+  }
+  try {
+    const gltf = await loader.loadAsync(await packURL(file));
+    const anim = gltf.userData.vrmAnimations && gltf.userData.vrmAnimations[0];
+    clipCache[file] = anim ? lockInPlace(createVRMAnimationClip(anim, vrm)) : null;
+    if (clipCache[file]) console.log('Анимация загружена: ' + file);
+  } catch (e) {
+    clipCache[file] = null; // файла нет - это нормально
+  }
+  return clipCache[file];
+}
+
+// ---------------------------------------------------------------------
+// Перенос анимации Mixamo (FBX) на скелет VRM
+// (по официальному примеру three-vrm: loadMixamoAnimation)
+// ---------------------------------------------------------------------
+let vrmHipsHeight = 0.87;
+let vrmHipsRest = null;
+
+// Ева стоит на месте: убираем из анимации шаги вперёд/назад/в стороны
+// (по X и Z), оставляем только движение вверх-вниз (приседания, дыхание).
+const LOCK_IN_PLACE = true;
+function lockInPlace(clip) {
+  if (!LOCK_IN_PLACE || !clip || !vrmHipsRest) return clip;
+  const name = vrm.humanoid.getNormalizedBoneNode('hips').name + '.position';
+  for (const track of clip.tracks) {
+    if (track.name !== name) continue;
+    const v = track.values;
+    for (let i = 0; i < v.length; i += 3) { v[i] = vrmHipsRest.x; v[i + 2] = vrmHipsRest.z; }
+  }
+  return clip;
+}
+const MIXAMO_TO_VRM = {
+  Hips: 'hips', Spine: 'spine', Spine1: 'chest', Spine2: 'upperChest', Neck: 'neck', Head: 'head',
+  LeftShoulder: 'leftShoulder', LeftArm: 'leftUpperArm', LeftForeArm: 'leftLowerArm', LeftHand: 'leftHand',
+  RightShoulder: 'rightShoulder', RightArm: 'rightUpperArm', RightForeArm: 'rightLowerArm', RightHand: 'rightHand',
+  LeftUpLeg: 'leftUpperLeg', LeftLeg: 'leftLowerLeg', LeftFoot: 'leftFoot', LeftToeBase: 'leftToes',
+  RightUpLeg: 'rightUpperLeg', RightLeg: 'rightLowerLeg', RightFoot: 'rightFoot', RightToeBase: 'rightToes',
+};
+for (const side of ['Left', 'Right']) {
+  const s = side.toLowerCase();
+  MIXAMO_TO_VRM[side + 'HandThumb1'] = s + 'ThumbMetacarpal';
+  MIXAMO_TO_VRM[side + 'HandThumb2'] = s + 'ThumbProximal';
+  MIXAMO_TO_VRM[side + 'HandThumb3'] = s + 'ThumbDistal';
+  for (const f of ['Index', 'Middle', 'Ring', 'Little']) {
+    const mx = f === 'Little' ? 'Pinky' : f;
+    MIXAMO_TO_VRM[side + 'Hand' + mx + '1'] = s + f + 'Proximal';
+    MIXAMO_TO_VRM[side + 'Hand' + mx + '2'] = s + f + 'Intermediate';
+    MIXAMO_TO_VRM[side + 'Hand' + mx + '3'] = s + f + 'Distal';
+  }
+}
+
+// Ноги и таз из Mixamo на Еве «скользят» (другие пропорции тела), и кажется,
+// что она висит в воздухе. Поэтому берём из Mixamo только верх тела,
+// а ноги стоят твёрдо. false = брать всё тело.
+const MIXAMO_UPPER_BODY_ONLY = true;
+const LOWER_BODY = new Set(['hips', 'leftUpperLeg', 'leftLowerLeg', 'leftFoot', 'leftToes',
+                            'rightUpperLeg', 'rightLowerLeg', 'rightFoot', 'rightToes']);
+
+// Перенос веса с ноги на ногу (пока играет анимация Mixamo без ног).
+// period - полный цикл «левая-правая» в секундах; shift - сдвиг таза в метрах;
+// tilt - наклон таза; knee - сгиб колена свободной ноги. 0 в shift/tilt/knee = выключить.
+const WEIGHT_SHIFT = { period: 14, shift: 0.02, tilt: 0.045, knee: 0.18, legLen: 0.8 };
+let legBlend = 0;
+const _qLeg = new THREE.Quaternion(), _eLeg = new THREE.Euler();
+
+function setBoneRot(bone, x, y, z, w) {
+  const node = vrm.humanoid.getNormalizedBoneNode(bone);
+  if (!node) return;
+  _qLeg.setFromEuler(_eLeg.set(x, y, z, 'XYZ'));
+  node.quaternion.slerp(_qLeg, w);
+}
+
+// =====================================================================
+// ПОДГОНКА MIXAMO ПОД ФИГУРУ ЕВЫ: манекен Mixamo худой, руки у него почти прижаты к телу.
+// У Евы объёмная кофта - те же углы уводят руки в рукава и кофту, а плечи задираются.
+// Поправка вшивается в анимацию ОДИН раз при загрузке (каждый кадр ничего не трогаем):
+// ARM_SPREAD - отвести руки от тела (градусы), SHOULDER_KEEP - сколько оставить движения плеч (0..1).
+// Для подбора можно открыть страницу с ?spread=12&shoulder=0.4
+// =====================================================================
+const _qs = new URLSearchParams(location.search);
+const ARM_SPREAD = _qs.has('spread') ? Number(_qs.get('spread')) : 0;   // новой Еве поправка не нужна
+const SHOULDER_KEEP = _qs.has('shoulder') ? Number(_qs.get('shoulder')) : 1;
+function fitTrackToBody(vrmBone, values) {
+  const side = vrmBone.startsWith('left') ? 1 : -1;
+  const q = new THREE.Quaternion(), id = new THREE.Quaternion();
+  if (vrmBone.endsWith('UpperArm') && ARM_SPREAD) {
+    const R = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -side * THREE.MathUtils.degToRad(ARM_SPREAD))   // минус = наружу (проверено на снимках);
+    for (let i = 0; i < values.length; i += 4) q.fromArray(values, i).premultiply(R).toArray(values, i);
+  } else if (vrmBone.endsWith('Shoulder') && SHOULDER_KEEP < 1) {
+    for (let i = 0; i < values.length; i += 4) q.fromArray(values, i).slerp(id, 1 - SHOULDER_KEEP).toArray(values, i);
+  }
+}
+
+// =====================================================================
+// ПЛОТНОСТЬ ТЕЛА: руки не проходят сквозь туловище.
+// При загрузке тело Евы само измеряется по модели (сечения через каждые 3 см).
+// Каждый кадр: если точка руки (локоть, предплечье, запястье, ладонь) внутри тела -
+// плечо/локоть поворачиваются ровно настолько, чтобы рука легла на поверхность.
+// Рука, которая тела не касается, не трогается. Поправка считается заново каждый кадр
+// от позы из анимации - поэтому не накапливается.
+// =====================================================================
+const BODY_SOLID = true;
+const ARM_RADIUS = { elbow: 0.032, fore: 0.03, wrist: 0.026, palm: 0.02 };   // толщина руки (м)
+const bodyCol = { bands: null, step: 0.03, min: 0, frontSign: 1 };
+const _bv = new THREE.Vector3(), _bw = new THREE.Vector3(), _bi = new THREE.Matrix4();
+
+function buildBodyCollider() {
+  const N = (n) => vrm.humanoid.getNormalizedBoneNode(n), R = (n) => vrm.humanoid.getRawBoneNode(n);
+  const hipsN = N('hips');
+  vrm.scene.updateMatrixWorld(true);
+  _bi.copy(hipsN.matrixWorld).invert();                     // координаты «от бёдер»
+  // где у тела перед: носок стопы впереди пятки
+  const foot = R('leftFoot'), toes = R('leftToes');
+  if (foot && toes) {
+    const a = foot.getWorldPosition(new THREE.Vector3()).applyMatrix4(_bi);
+    const b = toes.getWorldPosition(new THREE.Vector3()).applyMatrix4(_bi);
+    bodyCol.frontSign = Math.sign(b.z - a.z) || 1;
+  }
+  const torso = new Set();
+  for (const n of ['hips', 'spine', 'chest', 'upperChest']) { const b = R(n); if (b) torso.add(b); }
+  const bands = {};
+  vrm.scene.traverse((m) => {
+    if (!m.isSkinnedMesh || /hair|face/i.test(m.name)) return;
+    const g = m.geometry, si = g.attributes.skinIndex, sw = g.attributes.skinWeight, P = g.attributes.position;
+    if (!si || !sw) return;
+    for (let i = 0; i < P.count; i++) {
+      let best = 0, bw = -1;
+      for (let k = 0; k < 4; k++) { const w = sw.getComponent(i, k); if (w > bw) { bw = w; best = si.getComponent(i, k); } }
+      if (!torso.has(m.skeleton.bones[best])) continue;     // только туловище (без рук, ног, головы)
+      m.getVertexPosition(i, _bv); _bv.applyMatrix4(m.matrixWorld).applyMatrix4(_bi);
+      const k = Math.round(_bv.y / bodyCol.step);
+      const z = _bv.z * bodyCol.frontSign;
+      const b = bands[k] || (bands[k] = { w: 0, f: 0, b: 0 });
+      b.w = Math.max(b.w, Math.abs(_bv.x)); b.f = Math.max(b.f, z); b.b = Math.max(b.b, -z);
+    }
+  });
+  const ks = Object.keys(bands).map(Number).sort((a, b) => a - b);
+  if (!ks.length) { console.warn('Тело: не нашла туловище в модели'); return; }
+  bodyCol.min = ks[0];
+  bodyCol.bands = [];
+  for (let k = ks[0]; k <= ks[ks.length - 1]; k++) {        // дырки между сечениями - берём соседей
+    const b = bands[k] || bands[k - 1] || bands[k + 1] || { w: 0, f: 0, b: 0 };
+    bodyCol.bands.push(b);
+  }
+  console.log('Тело измерено: ' + bodyCol.bands.length + ' сечений, ширина до ' +
+    Math.max(...bodyCol.bands.map((b) => b.w)).toFixed(2) + ' м');
+}
+
+function bodyAt(y) {
+  if (!bodyCol.bands) return null;
+  const i = Math.round(y / bodyCol.step) - bodyCol.min;
+  return i >= 0 && i < bodyCol.bands.length ? bodyCol.bands[i] : null;
+}
+// точка (координаты от бёдер) внутри тела? -> насколько и куда вытолкнуть (там же), иначе null
+function bodyPushLocal(p, r) {
+  const S = bodyAt(p.y);
+  if (!S || S.w < 0.02) return null;
+  const z = p.z * bodyCol.frontSign;
+  const a = S.w + r, c = (z >= 0 ? S.f : S.b) + r;
+  const k = Math.hypot(p.x / a, z / c);
+  if (k >= 1) return null;
+  const sx = k < 1e-4 ? Math.sign(p.x) || 1 : p.x / k, sz = k < 1e-4 ? 0 : z / k;
+  return new THREE.Vector3(sx - p.x, 0, (sz - z) * bodyCol.frontSign);
+}
+// повернуть кость (её мировой поворот), чтобы её дочерняя точка from сдвинулась на push (всё в мире)
+function turnBone(bone, from, push) {
+  const j = bone.getWorldPosition(new THREE.Vector3());
+  const v1 = from.clone().sub(j), v2 = from.clone().add(push).sub(j);
+  if (v1.lengthSq() < 1e-8 || v2.lengthSq() < 1e-8) return;
+  const R = new THREE.Quaternion().setFromUnitVectors(v1.normalize(), v2.normalize());
+  const pq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+  bone.quaternion.premultiply(pq.clone().invert().multiply(R).multiply(pq));
+  bone.updateMatrixWorld(true);
+}
+const _solid = new Map();   // кость -> {anim: поза из анимации, out: что мы записали}
+function keepAnimPose(bone) {
+  // если анимация в этот кадр кость не переписала - начинаем от её позы, а не от нашей поправки
+  const st = _solid.get(bone);
+  if (st && bone.quaternion.equals(st.out)) bone.quaternion.copy(st.anim);
+  _solid.set(bone, { anim: bone.quaternion.clone(), out: null });
+}
+function solidBody() {
+  if (!BODY_SOLID || !bodyCol.bands) return;
+  const N = (n) => vrm.humanoid.getNormalizedBoneNode(n);
+  const hips = N('hips');
+  for (const side of ['left', 'right']) {
+    const up = N(side + 'UpperArm'), lo = N(side + 'LowerArm'), hand = N(side + 'Hand'), mid = N(side + 'MiddleProximal');
+    if (!up || !lo || !hand) continue;
+    keepAnimPose(up); keepAnimPose(lo);
+  }
+  vrm.humanoid.normalizedHumanBonesRoot.updateMatrixWorld(true);
+  _bi.copy(hips.matrixWorld).invert();
+  const toWorldDir = hips.getWorldQuaternion(new THREE.Quaternion());
+  for (const side of ['left', 'right']) {
+    const up = N(side + 'UpperArm'), lo = N(side + 'LowerArm'), hand = N(side + 'Hand'), mid = N(side + 'MiddleProximal');
+    if (!up || !lo || !hand) continue;
+    for (let it = 0; it < 4; it++) {
+      const e = lo.getWorldPosition(new THREE.Vector3()), h = hand.getWorldPosition(new THREE.Vector3());
+      const m = mid ? mid.getWorldPosition(new THREE.Vector3()) : h.clone();
+      const pts = [[e, ARM_RADIUS.elbow, up], [e.clone().lerp(h, 0.5), ARM_RADIUS.fore, up],
+                   [h, ARM_RADIUS.wrist, lo], [h.clone().lerp(m, 0.7), ARM_RADIUS.palm, lo]];
+      let worst = null, wl = 0.002;                         // меньше 2 мм - не трогаем
+      for (const [pw, r, bone] of pts) {
+        const pl = pw.clone().applyMatrix4(_bi);
+        const push = bodyPushLocal(pl, r);
+        if (push && push.length() > wl) { wl = push.length(); worst = [pw, push.applyQuaternion(toWorldDir), bone]; }
+      }
+      if (!worst) break;
+      turnBone(worst[2], worst[0], worst[1].multiplyScalar(1.05));
+    }
+    _solid.get(up).out = up.quaternion.clone();
+    _solid.get(lo).out = lo.quaternion.clone();
+  }
+}
+
+function updateWeightShift(dt) {
+  const cur = shotAction ? shotAction.getClip() : baseClip;
+  const usingMixamo = cur && cur.name.startsWith('mixamo_');
+  const target = (MIXAMO_UPPER_BODY_ONLY && usingMixamo) ? 1 : 0;
+  legBlend += (target - legBlend) * Math.min(1, dt * 3);
+  if (legBlend < 0.001) return;
+
+  const W = WEIGHT_SHIFT;
+  const t = clock.elapsedTime;
+  // s: -1..1, задерживается на каждой ноге и плавно переходит
+  const s = Math.tanh(2.2 * Math.sin(2 * Math.PI * t / W.period)) / Math.tanh(2.2);
+  const dx = W.shift * s;           // таз в сторону опорной ноги
+  const roll = W.tilt * s;          // бедро опорной ноги чуть выше
+  const legZ = -roll - dx / W.legLen; // ноги остаются вертикальными, ступни на месте
+  const bendL = W.knee * Math.max(0, -s); // левая свободна, когда вес на правой
+  const bendR = W.knee * Math.max(0, s);
+
+  const hips = vrm.humanoid.getNormalizedBoneNode('hips');
+  if (hips && vrmHipsRest) {
+    hips.position.x += (vrmHipsRest.x + dx - hips.position.x) * legBlend;
+    hips.position.y += (vrmHipsRest.y - 0.004 * Math.abs(s) - hips.position.y) * legBlend;
+    hips.position.z += (vrmHipsRest.z - hips.position.z) * legBlend;
+  }
+  setBoneRot('hips', 0, 0.03 * s, roll, legBlend);
+  setBoneRot('leftUpperLeg',  -0.5 * bendL, 0, legZ, legBlend);
+  setBoneRot('rightUpperLeg', -0.5 * bendR, 0, legZ, legBlend);
+  setBoneRot('leftLowerLeg',  bendL, 0, 0, legBlend);
+  setBoneRot('rightLowerLeg', bendR, 0, 0, legBlend);
+  setBoneRot('leftFoot',  -0.5 * bendL, 0, 0, legBlend);
+  setBoneRot('rightFoot', -0.5 * bendR, 0, 0, legBlend);
+}
+
+const fbxLoader = new FBXLoader();
+async function loadMixamoClip(url, opt = {}) {
+  const asset = await packAsset(url);
+  const clip = THREE.AnimationClip.findByName(asset.animations, 'mixamo.com') || asset.animations[0];
+  if (!clip) throw new Error('в файле нет анимации');
+
+  // Mixamo: mixamorigHips; Rokoko и другие мокап-студии: те же имена без приставки (Hips, Spine, LeftArm...)
+  const hipsNode = asset.getObjectByName('mixamorigHips') || asset.getObjectByName('Hips');
+  if (!hipsNode) throw new Error('не найден скелет (Hips / mixamorigHips)');
+  const isMixamo = hipsNode.name.startsWith('mixamorig');
+  // Мокап (Rokoko и др.): первый кадр - калибровочная T-поза. Берём её как исходную позу скелета
+  // (у некоторых файлов «поза по умолчанию» кривая) и отрезаем T-позу в начале и в конце записи.
+  let trim = null;
+  if (!isMixamo) { trim = findMocapRange(asset, clip); poseAt(asset, clip, 0); }
+  const hipsScale = vrmHipsHeight / (Math.abs(hipsNode.position.y) > 1e-3 ? hipsNode.position.y : 100);
+  const isVRM0 = vrm.meta && vrm.meta.metaVersion === '0';
+
+  const restInv = new THREE.Quaternion();
+  const parentRest = new THREE.Quaternion();
+  const q = new THREE.Quaternion();
+  const tracks = [];
+
+  for (const track of clip.tracks) {
+    const [rigName, prop] = track.name.split('.');
+    const vrmBone = MIXAMO_TO_VRM[rigName.replace(/^mixamorig\d*/, '')];
+    const vrmNode = vrmBone && vrm.humanoid.getNormalizedBoneNode(vrmBone);
+    const rigNode = asset.getObjectByName(rigName);
+    if (!vrmNode || !rigNode) continue;
+    if (MIXAMO_UPPER_BODY_ONLY && LOWER_BODY.has(vrmBone) && !opt.full) continue;   // ходьба/прыжок - всё тело
+
+    rigNode.getWorldQuaternion(restInv).invert();
+    rigNode.parent.getWorldQuaternion(parentRest);
+
+    if (track instanceof THREE.QuaternionKeyframeTrack) {
+      const v = track.values.slice();
+      for (let i = 0; i < v.length; i += 4) {
+        q.fromArray(v, i).premultiply(parentRest).multiply(restInv).toArray(v, i);
+        if (isVRM0) { v[i] = -v[i]; v[i + 2] = -v[i + 2]; }
+      }
+      fitTrackToBody(vrmBone, v);
+      tracks.push(new THREE.QuaternionKeyframeTrack(vrmNode.name + '.' + prop, track.times, v));
+    } else if (track instanceof THREE.VectorKeyframeTrack && vrmBone === 'hips') {
+      // Высота бёдер: первый кадр = рост бёдер Евы, дальше только изменения
+      // (дыхание, приседания) в её масштабе. Так ноги всегда стоят на полу.
+      const y0 = track.values[1];
+      const sc = Math.abs(y0) > 1e-6 ? vrmHipsHeight / y0 : hipsScale;
+      const baseY = vrmHipsRest ? vrmHipsRest.y : vrmHipsHeight;
+      // opt.abs - высота бёдер «как есть» (лёжа, вися, в прыжке): пол Mixamo = пол Евы
+      const v = opt.abs
+        ? track.values.map((x, i) => (i % 3 === 1 ? x * hipsScale + (baseY - vrmHipsHeight) + (opt.yOff || 0) : (isVRM0 ? -x : x) * hipsScale))
+        : track.values.map((x, i) => {
+          if (i % 3 === 1) return baseY + (x - y0) * sc;
+          return (isVRM0 ? -x : x) * sc;
+        });
+      console.log('Mixamo бёдра: узел ' + hipsNode.position.y.toFixed(2) + ', кадр0 ' + y0.toFixed(2) +
+                  ', было бы ' + (y0 * hipsScale).toFixed(2) + ' м, стало ' + baseY.toFixed(2) + ' м');
+      tracks.push(new THREE.VectorKeyframeTrack(vrmNode.name + '.' + prop, track.times, v));
+    }
+  }
+  let out = new THREE.AnimationClip((opt.full ? 'mixamofull_' : 'mixamo_') + url, clip.duration, tracks);
+  out.userData = { hipsScale };
+  if (trim) out = trimClip(out, trim[0], trim[1]);
+  const cut = Object.entries(CLIP_CUT).find(([k]) => url.endsWith(k.split('/').map(encodeURIComponent).join('/')));
+  if (cut) {
+    const [t0, t1] = cut[1];
+    out = appendReturn(trimClip(out, t0, Math.min(t1, out.duration)), 0.7);
+    console.log('Обрезано по настройке: ' + cut[0] + ' ' + t0 + '-' + t1 + ' с');
+  }
+  return opt.once ? out : makeLoopSeamless(out, LOOP_BLEND);
+}
+
+// Ручная обрезка: [с какой секунды, по какую] (секунды как в просмотрщике анимаций).
+// После обрезки Ева плавно возвращается в начальную позу.
+const CLIP_CUT = {
+  'rokoko/Cheer.fbx': [0, 1.95],
+  // смех: до 3,3 с - смеётся, запрокинув голову; дальше в файле резкий глубокий кивок
+  // вперёд (60° за 0,4 с) и голова висит внизу до 5,9 с - выглядело ужасно, отрезано
+  'anim/emotion/Laughing.fbx': [0, 3.3],
+};
+
+// плавный возврат в первую позу клипа за sec секунд
+function appendReturn(clip, sec) {
+  const D = clip.duration;
+  const tracks = clip.tracks.map((tr) => {
+    const n = tr.getValueSize(), k = tr.times.length;
+    const times = new Float32Array(k + 1); times.set(tr.times); times[k] = D + sec;
+    const vals = new Float32Array(tr.values.length + n); vals.set(tr.values);
+    for (let i = 0; i < n; i++) vals[k * n + i] = tr.values[i];
+    return new tr.constructor(tr.name, times, vals);
+  });
+  return new THREE.AnimationClip(clip.name, D + sec, tracks);
+}
+
+// поставить скелет FBX в позу кадра i
+function poseAt(asset, clip, i) {
+  for (const t of clip.tracks) {
+    const [n, prop] = t.name.split('.');
+    const o = asset.getObjectByName(n);
+    if (!o || !(prop in o) || !o[prop].fromArray) continue;
+    o[prop].fromArray(t.values, Math.min(i, t.times.length - 1) * t.getValueSize());
+  }
+  asset.updateMatrixWorld(true);
+}
+
+// где в мокап-записи настоящее движение: без T-позы (руки горизонтально в стороны) в начале и в конце
+function findMocapRange(asset, clip) {
+  const times = clip.tracks[0].times, n = times.length;
+  const get = (nm) => asset.getObjectByName(nm);
+  const LA = get('LeftArm'), LH = get('LeftHand'), RA = get('RightArm'), RH = get('RightHand');
+  if (!LA || !LH || !RA || !RH || n < 10) return null;
+  const a = new THREE.Vector3(), h = new THREE.Vector3();
+  poseAt(asset, clip, 0);
+  const armLen = LA.getWorldPosition(a).distanceTo(LH.getWorldPosition(h)) || 1;
+  const side = (A, H) => {
+    A.getWorldPosition(a); H.getWorldPosition(h);
+    const dy = Math.abs(h.y - a.y), flat = Math.hypot(h.x - a.x, h.z - a.z);
+    return dy < 0.35 * armLen && flat > 0.8 * armLen;           // рука вытянута горизонтально
+  };
+  const tpose = (i) => { poseAt(asset, clip, i); return side(LA, LH) && side(RA, RH); };
+  let i0 = 0; while (i0 < n - 1 && tpose(i0)) i0++;
+  let i1 = n - 1; while (i1 > i0 && tpose(i1)) i1--;
+  const pad = 0.25;                                              // ещё чуть-чуть: руки опускаются из T-позы
+  const t0 = i0 > 0 ? Math.min(times[i0] + pad, times[n - 1]) : times[0];
+  const t1 = i1 < n - 1 ? Math.max(times[i1] - pad, t0 + 1) : times[n - 1];
+  if (t1 - t0 < 1) return null;
+  console.log('Мокап: T-поза обрезана, движение ' + t0.toFixed(2) + '-' + t1.toFixed(2) + ' с из ' + times[n - 1].toFixed(2));
+  return [t0, t1];
+}
+
+function trimClip(clip, t0, t1) {
+  const tracks = clip.tracks.map((tr) => {
+    const n = tr.getValueSize(), ts = [], vs = [];
+    for (let i = 0; i < tr.times.length; i++) {
+      if (tr.times[i] < t0 - 1e-4 || tr.times[i] > t1 + 1e-4) continue;
+      ts.push(tr.times[i] - t0);
+      for (let k = 0; k < n; k++) vs.push(tr.values[i * n + k]);
+    }
+    return new tr.constructor(tr.name, ts, vs);
+  }).filter((tr) => tr.times.length);
+  return new THREE.AnimationClip(clip.name, t1 - t0, tracks);
+}
+
+// Убирает рывок при повторе: последние LOOP_BLEND секунд плавно подводят позу
+// к первому кадру, так что конец анимации совпадает с началом.
+const LOOP_BLEND = 0.6;
+function makeLoopSeamless(clip, blend) {
+  const D = clip.duration;
+  // если последний ключ стоит раньше конца клипа - добавляем ключ ровно в конце,
+  // иначе на повторе поза прыгает на первый кадр (тело дёргается, волосы «рябят»)
+  for (const track of clip.tracks) {
+    const t = track.times, n = track.getValueSize();
+    if (t.length && t[t.length - 1] < D - 1e-4) {
+      const nt = new Float32Array(t.length + 1); nt.set(t); nt[t.length] = D;
+      const nv = new Float32Array(track.values.length + n); nv.set(track.values);
+      for (let k = 0; k < n; k++) nv[t.length * n + k] = track.values[t.length * n - n + k];
+      track.times = nt; track.values = nv;
+    }
+  }
+  const qa = new THREE.Quaternion(), qb = new THREE.Quaternion();
+  for (const track of clip.tracks) {
+    const t = track.times, v = track.values, n = track.getValueSize();
+    const isQuat = track instanceof THREE.QuaternionKeyframeTrack;
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] < D - blend) continue;
+      let w = Math.min(1, (t[i] - (D - blend)) / blend);
+      w = w * w * (3 - 2 * w); // плавный разгон и торможение
+      if (isQuat) {
+        qa.fromArray(v, i * 4); qb.fromArray(v, 0);
+        qa.slerp(qb, w).toArray(v, i * 4);
+      } else {
+        for (let k = 0; k < n; k++) v[i * n + k] += (v[k] - v[i * n + k]) * w;
+      }
+    }
+  }
+  return clip;
+}
+
+async function setBase(file) {
+  if (!vrm || !mixer) return;
+  const token = ++baseToken;
+  let clip = await getClip(file);
+  if (!clip && file !== STATE_ANIM.idle) clip = await getClip(STATE_ANIM.idle);
+  if (!clip) clip = idleClip;
+  if (token !== baseToken || clip === baseClip) return;
+  baseClip = clip;
+  if (LOG_ANIM) console.log('🎬 цикл: ' + file);
+  crossTo(clip); // во время жеста база наберёт вес после его окончания
+}
+
+// ---------------------------------------------------------------------
+// Смешивание анимаций: веса меняем сами, плавно, и всегда нормируем,
+// чтобы сумма была ровно 1. Тогда нет ни рывков при быстрой смене
+// состояний, ни «проваливания» в T-позу.
+// ---------------------------------------------------------------------
+const activeActions = new Map(); // action -> текущий вес
+
+function startAction(a, weight) {
+  if (!activeActions.has(a)) {
+    a.reset();
+    const d = a.getClip().duration;
+    if (a.loop !== THREE.LoopOnce && d > ANIM.longClip) a.time = Math.random() * d;
+    a.play();
+    activeActions.set(a, weight);
+  }
+  a.setEffectiveWeight(activeActions.get(a));
+}
+
+function crossTo(clip, instant = false) {
+  const a = mixer.clipAction(clip);
+  startAction(a, instant ? 1 : 0);
+  if (instant) for (const k of activeActions.keys()) activeActions.set(k, k === a ? 1 : 0);
+  baseAction = a;
+}
+
+let fadeOverride = 0;   // особые плавные переходы (сон: сидит -> ложится)
+function updateBlend(dt) {
+  if (baseAction && !activeActions.has(baseAction)) startAction(baseAction, 0);
+  if (!activeActions.size) return;
+  const target = shotAction || baseAction;
+  const time = shotAction ? 0.3 : (shotJustEnded ? SHOT_RETURN : (fadeOverride || FADE));
+  const step = dt / time;
+  let sum = 0;
+  for (const [a, w] of activeActions) {
+    const goal = a === target ? 1 : 0;
+    const nw = goal > w ? Math.min(goal, w + step) : Math.max(goal, w - step);
+    activeActions.set(a, nw);
+    sum += nw;
+  }
+  for (const [a, w] of activeActions) {
+    const nw = sum > 0 ? w / sum : (a === target ? 1 : 0);
+    activeActions.set(a, nw);
+    if (nw <= 0.0001 && a !== target && a !== baseAction) {
+      a.stop();
+      activeActions.delete(a);
+    } else {
+      a.setEffectiveWeight(nw);
+    }
+  }
+  if (shotJustEnded && activeActions.get(target) >= 0.999) shotJustEnded = false;
+}
+let shotJustEnded = false;
+
+// Кусок жеста по SHOTS[name].from/to (кэшируется)
+const shotCache = {};
+async function getShotClip(name) {
+  if (name in shotCache) return shotCache[name];
+  const s = SHOTS[name];
+  if (!s) return null;
+  const full = await getClip(s.file);
+  if (!full) { shotCache[name] = null; return null; }
+  const FPS = 30;
+  const from = Math.max(0, s.from || 0);
+  const to = Math.min(full.duration, s.to || full.duration);
+  shotCache[name] = (from > 0 || to < full.duration)
+    ? THREE.AnimationUtils.subclip(full, 'shot_' + name, Math.round(from * FPS), Math.round(to * FPS), FPS)
+    : full;
+  return shotCache[name];
+}
+
+async function playShot(name) {
+  if (!vrm || !mixer || shotAction) return;
+  const now = performance.now() / 1000;
+  if (lastShotTime[name] && now - lastShotTime[name] < (SHOT_COOLDOWN[name] || 0)) return;
+  const clip = await getShotClip(name);
+  if (!clip || shotAction) return;
+  lastShotTime[name] = now;
+
+  const a = mixer.clipAction(clip);
+  if (activeActions.has(a)) { a.stop(); activeActions.delete(a); } // жест мог ещё затухать
+  a.setLoop(THREE.LoopOnce, 1);
+  a.clampWhenFinished = true;
+  startAction(a, 0);
+  shotAction = a;
+  if (LOG_ANIM) console.log('🎬 жест: shot:' + name);
+}
+
+const gestureLast = {};
+let gestureBusyUntil = 0;
+let shotKind = '';   // 'fidget' - бытовой жест (обрывается при смене состояния), иначе доигрывает
+async function playGesture(spec, kind = '') {
+  if (!vrm || !mixer || shotAction) return false;
+  const now = performance.now() / 1000;
+  if (now < gestureBusyUntil) return false;
+  if (spec.startsWith('shot:')) { lastShotTime[spec.slice(5)] = 0; await playShot(spec.slice(5)); shotKind = kind; return !!shotAction; }
+  const clip = await getClip(spec);
+  if (!clip || shotAction) return false;
+  const a = mixer.clipAction(clip);
+  if (activeActions.has(a)) { a.stop(); activeActions.delete(a); }
+  a.setLoop(THREE.LoopOnce, 1);
+  a.clampWhenFinished = true;
+  startAction(a, 0);
+  shotAction = a;
+  shotKind = kind;
+  gestureBusyUntil = now + 1.5;
+  if (LOG_ANIM) console.log('🎬 жест: ' + spec);
+  return true;
+}
+// жест по просьбе: обрывает бытовой жест и играет до конца
+async function commandGesture(key) {
+  const list = COMMAND_GESTURES[key];
+  if (!list || !vrm || !mixer) { console.warn('Нет жеста: ' + key); return false; }
+  const spec = pick(list, 'cmd_' + key);
+  if (!spec) return false;
+  if (shotAction) { shotAction = null; shotJustEnded = true; }   // текущий жест плавно уходит
+  gestureBusyUntil = 0;
+  if (spec.startsWith('shot:')) {
+    const name = spec.slice(5);
+    lastShotTime[name] = 0;
+    await playShot(name);
+    if (shotAction) shotKind = 'command';
+    return !!shotAction;
+  }
+  return playGesture(spec, 'command');
+}
+
+function pick(list, key) {
+  const opts = list.filter((f) => clipCache[f] !== null);
+  if (!opts.length) return null;
+  let c = opts[Math.floor(Math.random() * opts.length)];
+  if (opts.length > 1 && c === gestureLast[key]) c = opts[(opts.indexOf(c) + 1 + Math.floor(Math.random() * (opts.length - 1))) % opts.length];
+  gestureLast[key] = c;
+  return c;
+}
+const rnd = (r) => r[0] + Math.random() * (r[1] - r[0]);
+const director = { state: 'idle', nextLoop: 0, nextFidget: 0 };
+function directorEnter(state) {
+  if (VIEWER) return;
+  director.state = ANIM.loops[state] ? state : 'idle';
+  if (shotAction && shotKind === 'fidget') { shotAction = null; shotJustEnded = true; }
+  const t = clock.elapsedTime;
+  const f = pick(ANIM.loops[director.state], 'loop_' + director.state);
+  if (f) setBase(f);
+  director.nextLoop = t + rnd(ANIM.hold[director.state] || [15, 30]);
+  const fid = ANIM.fidgets[director.state];
+  director.nextFidget = fid ? t + rnd(fid.every) : Infinity;
+}
+let PROMO = false;   // режим съёмки промо: только жесты из сценария, без случайных
+function updateDirector() {
+  if (VIEWER || !vrm || !mixer || WALKIN.lock) return;
+  const t = clock.elapsedTime;
+  if (t >= director.nextLoop && !shotAction) {
+    const f = pick(ANIM.loops[director.state], 'loop_' + director.state);
+    if (f) setBase(f);
+    director.nextLoop = t + rnd(ANIM.hold[director.state] || [15, 30]);
+  }
+  const fid = ANIM.fidgets[director.state];
+  if (fid && t >= director.nextFidget && !PROMO) {
+    director.nextFidget = t + rnd(fid.every);
+    if (!shotAction && Math.random() < fid.chance) {
+      const g = pick(fid.pool, 'fid_' + director.state);
+      if (g) playGesture(g, 'fidget');
+    }
+  }
+}
+
+function onShotFinished(e) {
+  if (!shotAction || e.action !== shotAction) return;
+  shotAction = null;      // жест застыл на последнем кадре и плавно уходит
+  shotJustEnded = true;   // возврат в позу чуть медленнее (SHOT_RETURN)
+}
+
+// =====================================================================
+// МИМИКА (сглаживание)
+// =====================================================================
+// (старая мимика updateExpressions удалена - теперь лицо ведёт блок МИМИКА ниже)
+
+
+// =====================================================================
+// СЛОЙ ЖИВОСТИ: моргание, взгляд, голова, дыхание, губы по слогам, тень
+// Работает поверх любой анимации. Выключить что-то - поставь false.
+// =====================================================================
+const LIVE = {
+  blink: true,        // естественное моргание (вместо таймера из avatar3d.py)
+  gaze: true,         // глаза живые: смотрят на тебя / на курсор / в сторону
+  head: true,         // голова немного поворачивается за взглядом
+  headFollow: 0.45,   // насколько голова идёт за взглядом (0 - только глаза, 1 - вся)
+  cursor: true,       // следить за курсором мыши (нужен свежий avatar3d.py)
+  breath: true,       // дыхание грудью
+  breathAmp: 0.012,   // сила дыхания (радианы)
+  shadow: true,       // мягкая тень под ногами
+  shadowOpacity: 0.32,
+};
+
+const live = {
+  t: 0, blinkNext: 1.5, blinkT: -1, blinkDouble: false,
+  gazeObj: new THREE.Object3D(), gazeGoal: new THREE.Vector3(), gazeCur: new THREE.Vector3(),
+  sacc: new THREE.Vector2(), saccNext: 0, glanceUntil: 0, glanceOff: new THREE.Vector2(), glanceNext: 6,
+  cursor: null, cursorAt: -99, cursorPrev: null,
+  yaw: 0, pitch: 0, roll: 0,
+  lip: { A: 0, I: 0, U: 0, E: 0, O: 0 }, vowel: 'A', blinkV: 0, lipLow: true, lipLast: 0, ampPrev: 0,
+  shadow: null, spokeAt: -99, emoScale: 1,
+};
+scene.add(live.gazeObj);
+
+const VOWELS = {
+  A: { A: 1.0 },
+  O: { O: 0.9, A: 0.15 },
+  E: { E: 0.85, A: 0.2 },
+  I: { I: 0.8, A: 0.2 },
+  U: { U: 0.9 },
+};
+const VOWEL_W = [['A', 0.32], ['O', 0.2], ['E', 0.2], ['I', 0.16], ['U', 0.12]];
+function randomVowel(prev) {
+  for (let k = 0; k < 4; k++) {
+    let r = Math.random(), v = 'A';
+    for (const [n, w] of VOWEL_W) { if ((r -= w) <= 0) { v = n; break; } }
+    if (v !== prev) return v;
+  }
+  return 'A';
+}
+
+function setupLive() {
+  if (vrm.lookAt && LIVE.gaze) { vrm.lookAt.target = live.gazeObj; vrm.lookAt.autoUpdate = true; }
+  camera.getWorldPosition(live.gazeCur); live.gazeGoal.copy(live.gazeCur); live.gazeObj.position.copy(live.gazeCur);
+  if (LIVE.shadow) {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 4, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.55)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    const m = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false,
+                                            opacity: LIVE.shadowOpacity });
+    live.shadow = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.34), m);
+    live.shadow.rotation.x = -Math.PI / 2; live.shadow.renderOrder = -1;
+    scene.add(live.shadow);
+  }
+}
+
+// ---- моргание: случайные паузы 2-6 с, иногда двойное; быстро закрыть, чуть медленнее открыть
+function updateBlink(dt) {
+  if (!LIVE.blink) return;
+  const t = live.t;
+  if (live.blinkT < 0 && t >= live.blinkNext) live.blinkT = 0;
+  let v = 0;
+  if (live.blinkT >= 0) {
+    live.blinkT += dt;
+    const b = live.blinkT, C = 0.07, H = 0.04, O = 0.12;
+    v = b < C ? b / C : b < C + H ? 1 : b < C + H + O ? 1 - (b - C - H) / O : 0;
+    if (b >= C + H + O) {
+      live.blinkT = -1;
+      if (!live.blinkDouble && Math.random() < 0.15) { live.blinkDouble = true; live.blinkNext = t + 0.12; }
+      else {
+        live.blinkDouble = false;
+        // когда говорит или думает - моргает чаще
+        const busy = prevState === 'speaking' || prevState === 'thinking';
+        live.blinkNext = t + (busy ? 1.5 : 2.2) + Math.random() * (busy ? 3 : 4.5);
+      }
+    }
+  }
+  live.blinkV = v;
+}
+
+// ---- губы: из громкости делаем слоги с разными гласными
+function updateLips(dt) {
+  const amp = Math.max(morphSources.MTH_A || 0, morphSources.MTH_O || 0, morphSources.MTH_E || 0,
+                       morphSources.MTH_I || 0, morphSources.MTH_U || 0);
+  const t = live.t;
+  if (amp < 0.07) live.lipLow = true;
+  const rising = amp > live.ampPrev + 0.05;
+  if (amp > 0.1 && (live.lipLow || (rising && t - live.lipLast > 0.16)) && t - live.lipLast > 0.08) {
+    live.vowel = randomVowel(live.vowel); live.lipLast = t; live.lipLow = false;
+  }
+  live.ampPrev = amp;
+  const shape = VOWELS[live.vowel];
+  const k = Math.min(1, dt * 22);
+  const open = Math.pow(Math.min(1, amp * FACE.lipGain), 0.8);   // тихо - чуть приоткрыт, громко - сильнее
+  for (const n of Object.keys(live.lip)) {
+    const target = (shape[n] || 0) * open * (FACE.lips[n] || 0.5);
+    live.lip[n] += (target - live.lip[n]) * k;
+  }
+}
+
+// ---- точка, куда смотрит Ева
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+function headWorld(out) {
+  const h = vrm.humanoid.getNormalizedBoneNode('head');
+  return h ? h.getWorldPosition(out) : out.set(0, 1.4, 0);
+}
+function cursorWorld(out) {
+  // курсор живёт «на стекле монитора» = в плоскости камеры, в масштабе Евы на экране
+  const head = headWorld(_v1);
+  const hp = head.clone().project(camera);
+  const hx = (hp.x + 1) / 2 * innerWidth, hy = (1 - hp.y) / 2 * innerHeight;
+  const dist = camera.position.distanceTo(head);
+  const mpp = 2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / innerHeight;
+  const camR = _v2.set(1, 0, 0).applyQuaternion(camera.quaternion), camU = _v3.set(0, 1, 0).applyQuaternion(camera.quaternion);
+  out.copy(camera.position)
+     .addScaledVector(camR, (live.cursor.x - hx) * mpp * 0.6)
+     .addScaledVector(camU, -(live.cursor.y - hy) * mpp * 0.6);
+  // по высоте камеры - на уровне головы Евы
+  out.y += head.y - camera.position.y;
+  return out;
+}
+
+function updateGaze(dt) {
+  if (!LIVE.gaze) return;
+  const t = live.t, st = prevState;
+  const camPos = camera.position;
+  const head = headWorld(new THREE.Vector3());
+  const goal = live.gazeGoal;
+  const cursorFresh = LIVE.cursor && live.cursor && t - live.cursorAt < 2.5;
+
+  // базовая точка: на тебя (камера на уровне её глаз)
+  goal.set(camPos.x, head.y, camPos.z);
+  if (st === 'thinking') {
+    goal.x += (Math.sin(t * 0.13) > 0 ? 1 : -1) * 0.9; goal.y += 0.7;          // смотрит вверх-в сторону
+  } else if (st === 'searching') {
+    if (cursorFresh) cursorWorld(goal); else { goal.x += 0.7; goal.y -= 0.5; } // «смотрит в экран»
+  } else if (cursorFresh && (st === 'idle' || st === 'listening')) {
+    cursorWorld(goal);
+  } else if (st === 'idle' && !PROMO) {
+    // в простое иногда отводит взгляд
+    if (t >= live.glanceNext) {
+      live.glanceUntil = t + 1.2 + Math.random() * 2.5;
+      live.glanceOff.set((Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.8), (Math.random() - 0.6) * 0.6);
+      live.glanceNext = live.glanceUntil + 4 + Math.random() * 8;
+    }
+    if (t < live.glanceUntil) { goal.x += live.glanceOff.x; goal.y += live.glanceOff.y; }
+  }
+  // микро-саккады: глаза никогда не стоят мёртво
+  if (t >= live.saccNext) {
+    live.sacc.set((Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.07);
+    live.saccNext = t + 0.4 + Math.random() * 1.6;
+  }
+  goal.x += live.sacc.x; goal.y += live.sacc.y;
+
+  // глаза прыгают быстро, без плавности - как у людей
+  live.gazeCur.lerp(goal, Math.min(1, dt * 18));
+  live.gazeObj.position.copy(live.gazeCur);
+}
+
+// ---- добавки к позе поверх анимации (без накопления: если анимация кость не перезаписала,
+//      сначала возвращаем её «чистую» позу)
+const _addState = new Map();
+function addBegin(bone) {
+  const st = _addState.get(bone);
+  if (st && bone.quaternion.equals(st.out)) bone.quaternion.copy(st.anim);
+  _addState.set(bone, { anim: bone.quaternion.clone(), out: null });
+}
+function addEnd(bone) { _addState.get(bone).out = bone.quaternion.clone(); }
+const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion(), _qp = new THREE.Quaternion();
+// повернуть кость вокруг МИРОВОЙ оси на угол (удобно: не зависит от осей скелета)
+function rotateWorld(bone, axis, angle) {
+  if (!angle) return;
+  bone.parent.getWorldQuaternion(_qp);
+  _qa.setFromAxisAngle(axis, angle);
+  _qb.copy(_qp).invert().multiply(_qa).multiply(_qp);
+  bone.quaternion.premultiply(_qb);
+}
+
+const UP = new THREE.Vector3(0, 1, 0);
+function updateHeadAndBreath(dt) {
+  if (VIEWER) return;                       // в просмотрщике - чистая анимация
+  const t = live.t;
+  const neck = vrm.humanoid.getNormalizedBoneNode('neck');
+  const head = vrm.humanoid.getNormalizedBoneNode('head');
+  const chest = vrm.humanoid.getNormalizedBoneNode('upperChest') || vrm.humanoid.getNormalizedBoneNode('chest');
+
+  if (LIVE.breath && chest) {
+    addBegin(chest);
+    const speed = prevState === 'speaking' ? 1.6 : 1.0;
+    const b = Math.sin(t * 2 * Math.PI / 4.2 * speed);
+    const fwd = _v1.set(camera.position.x, 0, camera.position.z).sub(_v2.set(chest.getWorldPosition(_v3).x, 0, _v3.z)).normalize();
+    rotateWorld(chest, _v2.crossVectors(fwd, UP).normalize(), b * LIVE.breathAmp);
+    addEnd(chest);
+  }
+
+  if (!LIVE.head || !head || !neck) return;
+  const hp = head.getWorldPosition(new THREE.Vector3());
+  const toCam = _v1.copy(camera.position).sub(hp);
+  const toT = _v2.copy(live.gazeGoal).sub(hp);
+  const ang = (v) => Math.atan2(v.x, v.z), elev = (v) => Math.atan2(v.y, Math.hypot(v.x, v.z));
+  let yaw = ang(toT) - ang(toCam); yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+  let pitch = elev(toT) - elev(toCam);
+  yaw = THREE.MathUtils.clamp(yaw * LIVE.headFollow, -0.45, 0.45);
+  pitch = THREE.MathUtils.clamp(pitch * LIVE.headFollow, -0.25, 0.3);
+  // слушает - чуть наклоняет голову набок; плюс еле заметное покачивание
+  let roll = prevState === 'listening' ? 0.09 : 0;
+  yaw += 0.025 * Math.sin(t * 0.37) + 0.015 * Math.sin(t * 0.91);
+  pitch += 0.015 * Math.sin(t * 0.53 + 1);
+  roll += 0.02 * Math.sin(t * 0.29 + 2);
+  const k = Math.min(1, dt * 3.5);           // голова плавная, в отличие от глаз
+  live.yaw += (yaw - live.yaw) * k; live.pitch += (pitch - live.pitch) * k; live.roll += (roll - live.roll) * Math.min(1, dt * 2);
+
+  const fwd = _v3.set(toCam.x, 0, toCam.z).normalize();
+  const side = new THREE.Vector3().crossVectors(fwd, UP).normalize();
+  for (const [bone, part] of [[neck, 0.4], [head, 0.6]]) {
+    addBegin(bone);
+    rotateWorld(bone, UP, live.yaw * part);
+    rotateWorld(bone, side, live.pitch * part);
+    rotateWorld(bone, fwd, live.roll * part);
+    addEnd(bone);
+  }
+}
+
+function updateShadow() {
+  if (!live.shadow) return;
+  const hips = vrm.humanoid.getNormalizedBoneNode('hips');
+  const p = hips.getWorldPosition(_v1);
+  live.shadow.position.set(p.x, vrm.scene.position.y + 0.003, p.z);
+}
+
+function updateLive(dt) {
+  live.t += dt;
+  if (prevState === 'speaking') live.spokeAt = live.t;
+  const emoGoal = live.t - live.spokeAt < 0.4 ? 1 : FACE.after;
+  live.emoScale += (emoGoal - live.emoScale) * Math.min(1, dt * 4);
+  updateBlink(dt);
+  updateLips(dt);
+  if (!WALKIN.lock) updateGaze(dt);
+  updateHeadAndBreath(dt);
+  updateShadow();
+}
+
+
+// =====================================================================
+// МИМИКА (собрана с нуля): лицо = брови + глаза + рот, каждая часть отдельно.
+// Готовые эмоции VRoid (Joy и т.п.) НЕ используются: они открывают рот и спорят с речью.
+// Рот двигает только речь. Значения - сила частей лица (0..1), можно подправить.
+// =====================================================================
+const FACE = {
+  // эмоции (пока говорит - в полную силу, после речи - FACE.after от неё)
+  emotions: {
+    neutral:   {},
+    joy:       { EYE_Joy: 0.3, BRW_Joy: 0.7, MTH_Fun: 0.75 },
+    fun:       { EYE_Fun: 0.45, BRW_Fun: 0.6, MTH_Fun: 0.55 },
+    angry:     { EYE_Angry: 0.55, BRW_Angry: 0.85, MTH_Angry: 0.45 },
+    sorrow:    { EYE_Sorrow: 0.6, BRW_Sorrow: 0.85, MTH_Sorrow: 0.45 },
+    surprised: { EYE_Surprised: 0.6, BRW_Surprised: 0.9, MTH_Surprised: 0.25 },
+  },
+  // лицо по состоянию (лёгкое, складывается с эмоцией)
+  states: {
+    idle:      { MTH_Fun: 0.12 },
+    listening: { BRW_Surprised: 0.25, EYE_Natural: 0.15, MTH_Fun: 0.18 },
+    thinking:  { BRW_Angry: 0.35, EYE_Sorrow: 0.12, MTH_Neutral: 0.4 },
+    searching: { BRW_Angry: 0.2, EYE_Natural: 0.2 },
+    speaking:  {},
+  },
+  after: 0.6,           // эмоция после речи (доля): спокойная улыбка вместо «застывшей» радости
+  speakSmile: 0.4,      // пока говорит, улыбка/гримаса рта слабее (чтобы не мешала губам)
+  // губы при речи: насколько максимум открывается рот на каждой гласной (1 = как в VRoid, слишком широко)
+  lips: { A: 0.8, I: 0.7, U: 0.75, E: 0.7, O: 0.8 },   // было 0.55/0.55/0.6/0.5/0.55 - губы еле шевелились
+  lipGain: 1.3,         // чувствительность к громкости голоса
+  smooth: 6,            // скорость смены выражения (больше = быстрее)
+  micro: true,          // в простое иногда мимолётно улыбается
+};
+
+const face = { meshes: [], cur: {}, micro: 0, microNext: 8, microUntil: 0, names: new Set() };
+function setupFace() {
+  vrm.scene.traverse((o) => {
+    if (o.morphTargetDictionary && 'Fcl_MTH_A' in o.morphTargetDictionary) face.meshes.push(o);
+  });
+  for (const set of [...Object.values(FACE.emotions), ...Object.values(FACE.states)]) for (const k of Object.keys(set)) face.names.add(k);
+  for (const k of ['MTH_A', 'MTH_I', 'MTH_U', 'MTH_E', 'MTH_O', 'EYE_Close', 'EYE_Close_L', 'EYE_Close_R']) face.names.add(k);
+  console.log('Мимика: лицо найдено (' + face.meshes.length + ' меш.), частей: ' + face.names.size);
+}
+
+function faceTargets(dt) {
+  const T = {};
+  const add = (set, k) => { for (const [n, v] of Object.entries(set || {})) T[n] = Math.min(1, (T[n] || 0) + v * k); };
+  const speaking = prevState === 'speaking';
+  add(FACE.states[prevState], 1);
+  add(FACE.emotions[prevEmotion], live.emoScale);
+  // мимолётная улыбка в простое
+  if (FACE.micro && prevState === 'idle' && prevEmotion === 'neutral') {
+    if (live.t >= face.microNext) { face.microUntil = live.t + 1.2 + Math.random(); face.microNext = face.microUntil + 10 + Math.random() * 15; }
+    face.micro += ((live.t < face.microUntil ? 1 : 0) - face.micro) * Math.min(1, dt * 3);
+    add({ MTH_Fun: 0.3, EYE_Fun: 0.2 }, face.micro);
+  }
+  // пока говорит - рот отдаём губам: улыбка/гримаса рта слабее
+  if (speaking) for (const n of Object.keys(T)) if (n.startsWith('MTH_')) T[n] *= FACE.speakSmile;
+  // губы
+  for (const [v, w] of Object.entries(live.lip)) {
+    const n = 'MTH_' + v;
+    T[n] = Math.min(1, (T[n] || 0) + w);
+  }
+  // моргание / закрытые глаза
+  eyesForced += (eyesForcedGoal - eyesForced) * Math.min(1, dt * 4);
+  T.EYE_Close = Math.max(live.blinkV || 0, eyesForced);
+  return T;
+}
+
+function updateFace(dt) {
+  if (!face.meshes.length) return;
+  const T = faceTargets(dt);
+  for (const n of face.names) {
+    const target = T[n] || 0, cur = face.cur[n] || 0;
+    const speed = n === 'EYE_Close' ? 60 : n.startsWith('MTH_') && 'AIUEO'.includes(n.slice(4)) && n.length === 5 ? 28 : FACE.smooth;
+    face.cur[n] = cur + (target - cur) * Math.min(1, speed * dt);
+  }
+  // VRoid: «закрыть глаза» + любая другая форма глаз (улыбка, прищур) = ресницы проваливаются в щёку.
+  // Поэтому чем сильнее закрыты глаза, тем слабее остальные формы глаз.
+  const open = 1 - Math.min(1, face.cur.EYE_Close || 0);
+  for (const m of face.meshes) {
+    const d = m.morphTargetDictionary, inf = m.morphTargetInfluences;
+    for (const n of face.names) {
+      const i = d['Fcl_' + n]; if (i === undefined) continue;
+      inf[i] = n.startsWith('EYE_') && !n.startsWith('EYE_Close') ? face.cur[n] * open : face.cur[n];
+    }
+  }
+}
+// ---- детектор рывков: если точка тела за кадр двигается неестественно быстро - пишем в лог
+const _jump = { prev: null, pts: null, frames: 0, worst: 0 };
+function jumpCheck(dt) {
+  if (!_jump.pts) {
+    _jump.pts = [];
+    for (const n of ['head', 'leftHand', 'rightHand', 'leftLowerArm', 'rightLowerArm', 'chest', 'hips']) {
+      const b = vrm.humanoid.getRawBoneNode(n); if (b) _jump.pts.push([n, b]);
+    }
+    const sb = vrm.springBoneManager;
+    if (sb) { let i = 0; for (const j of sb.joints) { if (!j.child && i++ < 6) _jump.pts.push(['волосы' + i, j.bone]); } }
+  }
+  const cur = _jump.pts.map(([n, b]) => b.getWorldPosition(new THREE.Vector3()));
+  _jump.frames++;
+  if (_jump.prev && dt > 0) {
+    for (let i = 0; i < cur.length; i++) {
+      const v = cur[i].distanceTo(_jump.prev[i]) / dt;          // м/с
+      const lim = _jump.pts[i][0].startsWith('волосы') ? 8 : 5;
+      if (v > lim) {
+        const acts = [...activeActions].map(([a, w]) => a.getClip().name.split('/').pop().slice(-24) + ':' + w.toFixed(2)).join(' | ');
+        console.log(`[РЫВОК] ${_jump.pts[i][0]} ${v.toFixed(1)} м/с за кадр ${(dt * 1000).toFixed(0)} мс; t=${clock.elapsedTime.toFixed(2)}; ` +
+                    `состояние ${prevState}; ${acts}`);
+        break;
+      }
+    }
+  }
+  _jump.prev = cur;
+}
+
+// готовые выражения VRM держим на нуле (их могли включить анимации VRMA)
+function muteVrmExpressions() {
+  const em = vrm.expressionManager;
+  if (em) for (const e of em.expressions) e.weight = 0;
+}
+
+
+// =====================================================================
+// СТУДИЯ: сцена, кинокамера, запись видео (только при ?studio=1)
+// =====================================================================
+const BRAND = { a: 0x5ad1ff, b: 0xff6ad5 };     // фирменные цвета подсветки (голубой и розовый)
+const stage = { parts: null };
+function setupStudio() {
+  if (!STUDIO) return;
+  if (STUDIO.bg === 'stage') {
+    // фон: глубокий градиент с мягким светом в центре
+    const c = document.createElement('canvas'); c.width = 512; c.height = 1024;
+    const g = c.getContext('2d');
+    const lg = g.createLinearGradient(0, 0, 0, 1024);
+    lg.addColorStop(0, '#0b0f24'); lg.addColorStop(0.55, '#1a1440'); lg.addColorStop(1, '#2a0f35');
+    g.fillStyle = lg; g.fillRect(0, 0, 512, 1024);
+    const rg = g.createRadialGradient(256, 560, 20, 256, 560, 420);
+    rg.addColorStop(0, 'rgba(120,150,255,0.35)'); rg.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = rg; g.fillRect(0, 0, 512, 1024);
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    scene.background = tex;
+    stage.bgCanvas = c;
+    // светящийся круг на полу
+    const fc = document.createElement('canvas'); fc.width = fc.height = 256;
+    const fg = fc.getContext('2d'), fr = fg.createRadialGradient(128, 128, 10, 128, 128, 128);
+    fr.addColorStop(0, 'rgba(140,200,255,0.55)'); fr.addColorStop(0.45, 'rgba(160,110,255,0.25)'); fr.addColorStop(1, 'rgba(0,0,0,0)');
+    fg.fillStyle = fr; fg.fillRect(0, 0, 256, 256);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 2.6).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(fc), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    floor.position.y = 0.001; floor.renderOrder = -2; scene.add(floor); stage.floor = floor;
+    // летающие искорки
+    const N = 260, pos = new Float32Array(N * 3), col = new Float32Array(N * 3), ca = new THREE.Color(BRAND.a), cb = new THREE.Color(BRAND.b);
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 3.2; pos[i * 3 + 1] = Math.random() * 2.4; pos[i * 3 + 2] = -0.4 - Math.random() * 2.0;
+      const cc = Math.random() < 0.5 ? ca : cb; col[i * 3] = cc.r; col[i * 3 + 1] = cc.g; col[i * 3 + 2] = cc.b;
+    }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(pos, 3)); pg.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const sc = document.createElement('canvas'); sc.width = sc.height = 64;
+    const sg = sc.getContext('2d'), sr = sg.createRadialGradient(32, 32, 0, 32, 32, 32);
+    sr.addColorStop(0, 'rgba(255,255,255,1)'); sr.addColorStop(0.3, 'rgba(255,255,255,0.5)'); sr.addColorStop(1, 'rgba(255,255,255,0)');
+    sg.fillStyle = sr; sg.fillRect(0, 0, 64, 64);
+    stage.parts = new THREE.Points(pg, new THREE.PointsMaterial({ size: 0.03, map: new THREE.CanvasTexture(sc), vertexColors: true,
+      transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
+    scene.add(stage.parts);
+  }
+  // цветной контровой свет по бокам - «киношный» силуэт
+  const la = new THREE.DirectionalLight(BRAND.a, 0.45); la.position.set(-1.8, 1.6, -1.5); scene.add(la);
+  const lb = new THREE.DirectionalLight(BRAND.b, 0.35); lb.position.set(1.8, 1.4, -1.5); scene.add(lb);
+  console.log('Студия: ' + STUDIO.w + '×' + STUDIO.h + ', фон ' + STUDIO.bg);
+}
+// ---- фон-картинка за Евой (команда «фон:» в сценарии): чуть размытая, с плавной сменой
+const backdrop = { canvas: null, ctx: null, tex: null, from: null, to: null, t: 1, dur: 0.7 };
+function backdropFrame(src, blur) {
+  // картинка -> кадр размером с видео (в половину разрешения: это примерно размер самого скриншота, а смена фона не тормозит)
+  const w = Math.round(STUDIO.w / 2), h = Math.round(STUDIO.h / 2);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+  const k = Math.max(w / sw, h / sh) * (blur > 0 ? 1.02 : 1);       // «cover» + запас, чтобы размытие не темнило края
+  const dw = sw * k, dh = sh * k;
+  if (src !== stage.bgCanvas) g.filter = (blur > 0 ? `blur(${blur}px) ` : '') + 'brightness(0.88)';
+  g.drawImage(src, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  g.filter = 'none';
+  if (src !== stage.bgCanvas) {
+    // мягкое затемнение по краям и снизу - Ева лучше читается на любом фоне
+    const v = g.createRadialGradient(w / 2, h * 0.45, h * 0.2, w / 2, h * 0.45, h * 0.75);
+    v.addColorStop(0, 'rgba(5,4,15,0)'); v.addColorStop(1, 'rgba(5,4,15,0.35)');
+    g.fillStyle = v; g.fillRect(0, 0, w, h);
+    const b = g.createLinearGradient(0, h * 0.6, 0, h);
+    b.addColorStop(0, 'rgba(5,4,15,0)'); b.addColorStop(1, 'rgba(5,4,15,0.45)');
+    g.fillStyle = b; g.fillRect(0, 0, w, h);
+  }
+  return c;
+}
+function setBackdrop(url, blur) {
+  if (!STUDIO || STUDIO.bg === 'green') return;
+  blur = (blur === undefined || blur === null || isNaN(blur)) ? 2 : +blur;      // 2 - чуть-чуть размыто
+  const apply = (frame, photo) => {
+    if (!backdrop.canvas) {
+      backdrop.canvas = document.createElement('canvas');
+      backdrop.canvas.width = frame.width; backdrop.canvas.height = frame.height;
+      backdrop.ctx = backdrop.canvas.getContext('2d');
+      backdrop.tex = new THREE.CanvasTexture(backdrop.canvas); backdrop.tex.colorSpace = THREE.SRGBColorSpace;
+      // старт смены - с того, что было на экране (обычная сцена)
+      backdrop.ctx.drawImage(stage.bgCanvas ? backdropFrame(stage.bgCanvas, 0) : frame, 0, 0);
+      scene.background = backdrop.tex;
+    }
+    const snap = document.createElement('canvas'); snap.width = frame.width; snap.height = frame.height;
+    snap.getContext('2d').drawImage(backdrop.canvas, 0, 0);
+    backdrop.from = snap; backdrop.to = frame; backdrop.t = 0; backdrop.start = performance.now();
+    if (stage.floor) stage.floor.visible = !photo;               // светящийся круг на полу - только на сцене
+    console.log('🖼 фон: ' + (photo ? 'картинка, размытие ' + blur : 'обычная сцена'));
+  };
+  if (!url) { if (stage.bgCanvas && backdrop.canvas) apply(backdropFrame(stage.bgCanvas, 0), false); return; }
+  const img = new Image();
+  img.onload = () => apply(backdropFrame(img, blur), true);
+  img.onerror = () => console.log('🖼 фон: не получилось открыть картинку');
+  img.src = url;
+}
+function updateBackdrop(dt) {
+  if (!backdrop.canvas || backdrop.t >= 1) return;
+  backdrop.t = Math.min(1, (performance.now() - backdrop.start) / 1000 / backdrop.dur);   // по часам, а не по кадрам
+  const g = backdrop.ctx;
+  g.globalAlpha = 1; g.drawImage(backdrop.from, 0, 0);
+  g.globalAlpha = ease(backdrop.t); g.drawImage(backdrop.to, 0, 0);
+  g.globalAlpha = 1;
+  backdrop.tex.needsUpdate = true;
+}
+function updateStage(dt) {
+  updateBackdrop(dt);
+  if (!stage.parts) return;
+  const p = stage.parts.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    let y = p.getY(i) + dt * (0.04 + (i % 7) * 0.008);
+    if (y > 2.5) y = 0;
+    p.setY(i, y); p.setX(i, p.getX(i) + Math.sin(live.t * 0.5 + i) * dt * 0.01);
+  }
+  p.needsUpdate = true;
+}
+
+// ---- кинокамера: планы и плавные переезды
+const cine = { preset: 'full', from: null, t: 0, dur: 0, orbitT: -1, orbitDur: 0, orbitDeg: 360,
+               pos: new THREE.Vector3(), target: new THREE.Vector3(), fov: 30, inited: false };
+function cinePose(name) {
+  const hb = (n) => vrm.humanoid.getNormalizedBoneNode(n).getWorldPosition(new THREE.Vector3());
+  const head = hb('head'), hips = hb('hips'), chest = hb('chest');
+  const H = head.y + 0.12;                           // рост
+  const fwd = new THREE.Vector3(0, 0, 1);
+  const P = (target, dist, up = 0, fov = 30) => ({ target, pos: target.clone().addScaledVector(fwd, dist).add(new THREE.Vector3(0, up, 0)), fov });
+  const fitDist = (h, fov) => (h / 2) / Math.tan(THREE.MathUtils.degToRad(fov / 2));
+  // ширина кадра в метрах (видео вертикальное, поэтому важна именно ширина) -> расстояние камеры
+  const aspect = STUDIO.w / STUDIO.h;
+  const byW = (w, fov) => (w / 2) / (Math.tan(THREE.MathUtils.degToRad(fov / 2)) * aspect);
+  // крупные планы держат ЛИЦО: точка между глаз и направление взгляда головы (наклонилась - камера за ней)
+  const faceShot = (w, fov, dy) => {
+    const le = vrm.humanoid.getNormalizedBoneNode('leftEye'), re = vrm.humanoid.getNormalizedBoneNode('rightEye');
+    let mid = head.clone().add(new THREE.Vector3(0, 0.06, 0.03)), dir = fwd.clone();
+    if (le && re) {
+      const a = le.getWorldPosition(new THREE.Vector3()), b = re.getWorldPosition(new THREE.Vector3());
+      mid = a.clone().add(b).multiplyScalar(0.5);
+      const f = mid.clone().sub(head); f.y = 0;                    // куда повёрнуто лицо (по горизонтали)
+      if (f.lengthSq() > 1e-6) { f.normalize(); if (f.z < 0) f.negate(); dir = fwd.clone().lerp(f, 0.5).normalize(); }
+    }
+    const t = mid.add(new THREE.Vector3(0, dy, 0));
+    return { target: t, pos: t.clone().addScaledVector(dir, byW(w, fov)), fov };
+  };
+  switch (name) {
+    case 'eyes':  return faceShot(0.34, 20, 0.0);
+    case 'face':  return faceShot(0.5, 26, -0.04);
+    case 'bust':  return P(chest.clone().add(new THREE.Vector3(0, 0.16, 0)), byW(0.62, 30), 0.03, 30);
+    case 'waist': return P(new THREE.Vector3(hips.x, hips.y + 0.38, hips.z), byW(0.85, 30), 0.05, 30);
+    case 'low':   { const t = new THREE.Vector3(hips.x, H * 0.58, hips.z); const d = fitDist(H * 1.45, 34);
+                    return { target: t, pos: new THREE.Vector3(t.x, 0.35, t.z + d), fov: 34 }; }
+    default:      { const t = new THREE.Vector3(hips.x, H * 0.55, hips.z); return P(t, fitDist(H * 1.22, 30), 0.05, 30); }
+  }
+}
+// «умная камера»: если руки/голова уходят за край кадра - плавно отъезжает, потом возвращается
+const FIT_BONES = ['leftHand', 'rightHand', 'head', 'leftLowerArm', 'rightLowerArm'];
+const fit = { zoom: 1, goal: 1, hold: 0 };
+function fitNeed() {
+  let m = 0; const v = new THREE.Vector3(), el = new THREE.Vector3();
+  for (const b of FIT_BONES) {
+    const n = vrm.humanoid.getNormalizedBoneNode(b); if (!n) continue;
+    n.getWorldPosition(v); if (b === 'head') v.y += 0.14;   // макушка
+    if (b === 'leftHand' || b === 'rightHand') {          // кончики пальцев: продолжаем линию предплечья
+      const fa = vrm.humanoid.getNormalizedBoneNode(b === 'leftHand' ? 'leftLowerArm' : 'rightLowerArm');
+      if (fa) { fa.getWorldPosition(el); v.addScaledVector(v.clone().sub(el).normalize(), 0.2); }
+    }
+    v.project(camera);
+    if (v.y < -1) continue;                            // ниже кадра (опущенные руки) - не важно
+    m = Math.max(m, v.y, Math.abs(v.x));               // важны только верх и бока
+  }
+  return m / 0.9;                                      // кончики пальцев - внутри 90% кадра
+}
+function updateFit(dt) {
+  // отъезд только на общих планах и не во время переезда камеры (иначе на переезде с крупного плана
+  // руки «вне кадра» и камера улетает далеко). На крупных планах руки за кадром - это нормально.
+  const moving = cine.from && cine.dur > 0 && cine.t < cine.dur;
+  if (!['full', 'waist', 'low'].includes(cine.preset) || moving) { fit.goal = 1; fit.hold = 0; }
+  else {
+    const need = fitNeed() * fit.zoom;                 // во сколько раз нужно отъехать
+    if (need > fit.goal) { fit.goal = Math.min(cine.preset === 'waist' ? 1.9 : 1.5, need * 1.04); fit.hold = 1.2; }
+    else if ((fit.hold -= dt) < 0) fit.goal += (Math.max(1, need) - fit.goal) * Math.min(1, dt * 1.5);
+  }
+  const rate = fit.goal > fit.zoom ? 7 : 2;          // отъезд быстрый, возврат мягкий
+  fit.zoom += (fit.goal - fit.zoom) * Math.min(1, dt * rate);
+}
+const ease = (x) => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+function setCamera(cmd) {
+  if (!STUDIO) return;
+  const [name, a1, a2] = String(cmd).trim().toLowerCase().split(/\s+/);
+  const dur = parseFloat(a1 || '0') || 0;
+  if (name === 'orbit' || name === 'облёт' || name === 'облет') {
+    cine.orbitT = 0; cine.orbitDur = dur || 6; cine.orbitDeg = parseFloat(a2 || '360') || 360;
+    console.log('🎥 облёт ' + cine.orbitDur + ' с'); return;
+  }
+  const map = { 'глаза': 'eyes', 'лицо': 'face', 'грудь': 'bust', 'по_пояс': 'waist', 'пояс': 'waist',
+                'рост': 'full', 'в_рост': 'full', 'снизу': 'low', 'герой': 'low' };
+  cine.from = { pos: cine.pos.clone(), target: cine.target.clone(), fov: cine.fov };
+  cine.preset = map[name] || name; cine.t = 0; cine.dur = dur;
+  const g = vrm ? cinePose(cine.preset) : null;
+  console.log('🎥 камера: ' + cine.preset + (dur ? ' за ' + dur + ' с' : ' (склейка)') +
+              (g ? ', до лица ' + g.pos.distanceTo(g.target).toFixed(2) + ' м' : ''));
+}
+function updateCine(dt) {
+  if (!STUDIO || !vrm) return;
+  const goal = cinePose(cine.preset);
+  if (!cine.inited) { cine.pos.copy(goal.pos); cine.target.copy(goal.target); cine.fov = goal.fov; cine.inited = true; }
+  if (cine.from && cine.dur > 0 && cine.t < cine.dur) {
+    cine.t += dt; const e = ease(Math.min(1, cine.t / cine.dur));
+    cine.pos.lerpVectors(cine.from.pos, goal.pos, e); cine.target.lerpVectors(cine.from.target, goal.target, e);
+    cine.fov = cine.from.fov + (goal.fov - cine.from.fov) * e;
+  } else {
+    const k = cine.from && cine.dur === 0 && cine.t === 0 ? 1 : Math.min(1, dt * 3);   // склейка - сразу
+    cine.pos.lerp(goal.pos, k); cine.target.lerp(goal.target, k); cine.fov += (goal.fov - cine.fov) * k;
+    cine.t = Math.max(cine.t, 1e-6);
+  }
+  updateFit(dt);
+  const pos = cine.target.clone().add(cine.pos.clone().sub(cine.target).multiplyScalar(fit.zoom));
+  if (cine.orbitT >= 0) {                            // облёт вокруг Евы
+    cine.orbitT += dt; const e = ease(Math.min(1, cine.orbitT / cine.orbitDur));
+    const off = pos.clone().sub(cine.target).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(cine.orbitDeg) * e);
+    pos.copy(cine.target).add(off);
+    if (cine.orbitT >= cine.orbitDur) cine.orbitT = -1;
+  }
+  const t = live.t;                                   // лёгкая «ручная» камера - живее
+  pos.x += Math.sin(t * 0.7) * 0.004; pos.y += Math.sin(t * 0.9 + 1) * 0.003;
+  camera.position.copy(pos);
+  camera.fov = cine.fov; camera.updateProjectionMatrix();
+  camera.lookAt(cine.target.x + Math.sin(t * 0.5) * 0.002, cine.target.y, cine.target.z);
+}
+
+// ---- запись видео прямо из картинки (высокое качество, без OBS)
+const recorder = { rec: null, chunks: [], name: 'take' };
+function recStart(name) {
+  if (!STUDIO) return;
+  if (recorder.rec && recorder.rec.state !== 'inactive') recorder.rec.stop();
+  const stream = renderer.domElement.captureStream(STUDIO.fps);
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
+  recorder.name = name || ('take_' + Date.now());
+  recorder.chunks = [];
+  const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 40e6 });
+  r.ondataavailable = (e) => { if (e.data && e.data.size) recorder.chunks.push(e.data); };
+  r.onstop = () => {
+    const blob = new Blob(recorder.chunks, { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = recorder.name + '.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+    console.log('[REC] готово: ' + recorder.name + '.webm, ' + (blob.size / 1e6).toFixed(1) + ' МБ');
+  };
+  r.start(1000);
+  recorder.rec = r;
+  console.log('[REC] запись началась (' + mime + ')');
+}
+function recStop() { if (recorder.rec && recorder.rec.state !== 'inactive') recorder.rec.stop(); }
+
+// ---- глаза по сценарию (закрыты / открыты) - для эффектного начала
+let eyesForced = 0, eyesForcedGoal = 0;
+
+// =====================================================================
+// API ДЛЯ PYTHON
+// =====================================================================
+function exposeApi() {
+  window.setMorph = (name, value) => {
+    // от Python берём только громкость речи (MTH_*). Брови/глаза/эмоции мимика решает сама
+    if (!name.startsWith('MTH_')) return;
+    morphSources[name] = Number(value) || 0;
+  };
+  // курсор мыши в пикселях относительно окна аватара (шлёт avatar3d.py)
+  window.setCursor = (x, y) => {
+    const p = live.cursorPrev;
+    if (!p || Math.abs(p.x - x) + Math.abs(p.y - y) > 3) live.cursorAt = live.t;
+    live.cursor = { x, y }; live.cursorPrev = { x, y };
+  };
+  window.resetMorphs = () => { for (const k of Object.keys(morphSources)) morphSources[k] = 0; };
+
+  const emoLast = {};
+  window.setEmotion = (emo) => {
+    if (emo === prevEmotion) return;
+    prevEmotion = emo;
+    const pool = PROMO ? null : ANIM.emotion[emo];
+    const now = performance.now() / 1000;
+    if (!pool || (emoLast[emo] && now - emoLast[emo] < ANIM.emotionCooldown)) return;
+    const g = pick(pool, 'emo_' + emo);
+    if (g) { emoLast[emo] = now; playGesture(g); }
+  };
+
+  window.setState = (state) => {
+    if (DEBUG_FRAMES) console.log('[состояние] ' + prevState + ' -> ' + state);
+    if (SLEEP.state !== 'awake') {                            // спала - к ней обратились: сначала встаёт
+      SLEEP.pendingState = state; prevState = state;
+      if (state !== 'idle') window.sleepEnd();
+      return;
+    }
+    const was = prevState;
+    prevState = state;
+    // из режима ожидания сразу в речь = ответ на «Ева» или прощание -> приветственный жест
+    if (was === 'idle' && state === 'speaking' && !PROMO) {
+      const g = pick(ANIM.greeting, 'greeting');
+      if (g && !(lastShotTime.__greet && performance.now() / 1000 - lastShotTime.__greet < 6)) {
+        lastShotTime.__greet = performance.now() / 1000;
+        playGesture(g);
+      }
+    }
+    if (state !== was || !baseAction) directorEnter(state);
+  };
+
+  window.playVRMA = (file) => { setBase(file); };
+  window.playShot = (name) => { lastShotTime[name] = 0; playShot(name); }; // для теста из консоли
+  window.playGesture = (spec) => playGesture(spec);
+  window.doGesture = (key) => { if (SLEEP.state === 'awake') commandGesture(String(key || '').trim()); };
+  // пульт: сыграть любую анимацию по пути относительно vrma/ (обрывает текущий жест)
+  window.playAnim = (spec) => {
+    if (SLEEP.state !== 'awake' || !spec) return;
+    if (shotAction) { shotAction = null; shotJustEnded = true; }
+    gestureBusyUntil = 0;
+    playGesture(String(spec), 'command').then((ok) => { if (!ok) console.warn('Не сыграла: ' + spec); });
+  };
+  window.setPromo = (on) => { PROMO = !!on; console.log('Режим съёмки: ' + (PROMO ? 'ВКЛ' : 'выкл')); };
+  window.setCamera = (cmd) => setCamera(cmd);
+  window.recStart = (name) => recStart(name);
+  window.recStop = () => recStop();
+  window.setEyes = (closed) => { eyesForcedGoal = closed ? 1 : 0; };
+  window.setBackdrop = (url, blur) => setBackdrop(url, blur);
+}
+
+// =====================================================================
+// ЦИКЛ
+// =====================================================================
+// =====================================================================
+// ПРОСМОТРЩИК АНИМАЦИЙ (только при ?viewer=1)
+// =====================================================================
+const viewer = { speed: 1, paused: false, controls: null, cur: '', ui: {} };
+const GROUP_NAMES = { idle: 'Простой', listening: 'Слушает', thinking: 'Думает', searching: 'Ищет', speaking: 'Говорит' };
+function setupViewer() {
+  scene.background = new THREE.Color(0x2a2c33);
+  viewer.controls = new OrbitControls(camera, renderer.domElement);
+  const box = new THREE.Box3().setFromObject(vrm.scene);
+  viewer.controls.target.copy(box.getCenter(new THREE.Vector3()));
+  viewer.controls.enableDamping = true;
+  const css = document.createElement('style');
+  css.textContent = `#vp{position:fixed;top:10px;left:10px;width:300px;background:#353842ee;color:#eee;font:13px Segoe UI,Arial;
+    border-radius:10px;padding:10px;z-index:9}#vp select,#vp button{width:100%;margin:3px 0;padding:6px;background:#474b58;color:#fff;
+    border:1px solid #5d6273;border-radius:6px;font:inherit}#vp .r{display:flex;gap:5px}#vp .r button{flex:1}#vp input{width:100%}
+    #vp small{color:#aab}`;
+  document.head.appendChild(css);
+  const d = document.createElement('div'); d.id = 'vp';
+  d.innerHTML = `<b>Анимации Евы</b><select id="vs" size="14"></select>
+    <div class="r"><button id="vprev">◀ пред.</button><button id="vplay">⏸ пауза</button><button id="vnext">след. ▶</button></div>
+    <input id="vt" type="range" min="0" max="1000" value="0"><small id="vi"></small>
+    <div>Скорость: <span id="vsv">1.0</span>×</div><input id="vspd" type="range" min="0.1" max="2" step="0.1" value="1">
+    <small>Мышь: левая - вращать, колесо - приблизить, правая - сдвинуть</small>`;
+  document.body.appendChild(d);
+  const sel = d.querySelector('#vs');
+  const add = (label, list) => {
+    const g = document.createElement('optgroup'); g.label = label;
+    [...new Set(list)].forEach((f) => { if (clipCache[f] === null) return; const o = document.createElement('option');
+      o.value = f; o.textContent = f.replace(/^anim\/[a-z]+\//, '').replace('shot:', 'VRMA: ').replace('.fbx', ''); g.appendChild(o); });
+    sel.appendChild(g);
+  };
+  for (const [k, v] of Object.entries(ANIM.loops)) add('Цикл: ' + (GROUP_NAMES[k] || k), v);
+  for (const [k, v] of Object.entries(ANIM.fidgets)) add('Жесты: ' + (GROUP_NAMES[k] || k), v.pool);
+  for (const [k, v] of Object.entries(ANIM.emotion)) add('Эмоция: ' + k, v);
+  add('Приветствие', ANIM.greeting);
+  add('По просьбе', [...new Set(Object.values(COMMAND_GESTURES).flat())]);
+  sel.onchange = () => viewerPlay(sel.value);
+  const step = (n) => { sel.selectedIndex = Math.max(0, Math.min(sel.options.length - 1, sel.selectedIndex + n)); viewerPlay(sel.value); };
+  d.querySelector('#vprev').onclick = () => step(-1);
+  d.querySelector('#vnext').onclick = () => step(1);
+  d.querySelector('#vplay').onclick = (e) => { viewer.paused = !viewer.paused; e.target.textContent = viewer.paused ? '▶ играть' : '⏸ пауза'; };
+  const t = d.querySelector('#vt');
+  t.oninput = () => { if (!baseAction) return; viewer.paused = true; d.querySelector('#vplay').textContent = '▶ играть';
+    baseAction.time = t.value / 1000 * baseAction.getClip().duration; };
+  const sp = d.querySelector('#vspd');
+  sp.oninput = () => { viewer.speed = +sp.value; d.querySelector('#vsv').textContent = (+sp.value).toFixed(1); };
+  viewer.ui = { sel, t, info: d.querySelector('#vi') };
+  const want = new URLSearchParams(location.search).get('anim');
+  const first = [...sel.options].find((o) => want && o.value.toLowerCase().includes(want.toLowerCase())) || sel.options[0];
+  if (first) { sel.value = first.value; viewerPlay(first.value); }
+}
+async function viewerPlay(spec) {
+  viewer.cur = spec;
+  const clip = spec.startsWith('shot:') ? await getShotClip(spec.slice(5)) : await getClip(spec);
+  if (!clip || viewer.cur !== spec) return;
+  baseClip = clip;
+  const a = mixer.clipAction(clip);
+  a.setLoop(THREE.LoopRepeat, Infinity); a.clampWhenFinished = false;
+  shotAction = null;
+  crossTo(clip);
+  console.log('🎬 просмотр: ' + spec);
+}
+function viewerTick() {
+  if (viewer.controls) viewer.controls.update();
+  const u = viewer.ui;
+  if (!u.t || !baseAction) return;
+  const D = baseAction.getClip().duration;
+  const tt = baseAction.time % D;
+  if (!viewer.paused) u.t.value = Math.round(tt / D * 1000);
+  u.info.textContent = `${tt.toFixed(1)} / ${D.toFixed(1)} с`;
+}
+
+let PAUSED = false;          // игровой режим: Ева спит, ничего не рисуем (видеокарта свободна)
+window.setPaused = (p) => {
+  const was = PAUSED; PAUSED = !!p;
+  if (was && !PAUSED) { clock.getDelta(); requestAnimationFrame(animate); }   // проснулась - без скачка времени
+};
+
+// =====================================================================
+// ПОЯВЛЕНИЕ: голограмма из шара панели (окно двигает Python, эффект - здесь)
+// =====================================================================
+const HOLO = { on: false, t: 0, t1: 1.3, t2: 1.9, t3: 0.8, s0: 0.35, rt: null, scene: null, cam: null, mat: null };
+if (INTRO) renderer.domElement.style.opacity = '0';
+if (INTRO) setTimeout(() => { if (!HOLO.on && renderer.domElement.style.opacity === '0') renderer.domElement.style.opacity = '1'; }, 30000);
+function holoSetup() {
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  HOLO.rt = new THREE.WebGLRenderTarget(size.x, size.y, { samples: 4 });
+  HOLO.cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  HOLO.mat = new THREE.ShaderMaterial({
+    transparent: true, blending: THREE.NoBlending, depthTest: false, depthWrite: false,
+    uniforms: { tex: { value: HOLO.rt.texture }, uP: { value: 0 }, uH: { value: 1 }, uFlash: { value: 0 }, uTime: { value: 0 } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+    fragmentShader: `
+      varying vec2 vUv; uniform sampler2D tex; uniform float uP, uH, uFlash, uTime;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f);
+        return mix(mix(hash(i), hash(i + vec2(1., 0.)), u.x), mix(hash(i + vec2(0., 1.)), hash(i + vec2(1., 1.)), u.x), u.y); }
+      vec3 toSRGB(vec3 c){ c = max(c, 0.); return mix(c * 12.92, 1.055 * pow(c, vec3(1. / 2.4)) - .055, step(.0031308, c)); }
+      void main(){
+        vec2 uv = vUv;
+        float band = floor(uv.y * 70. + floor(uTime * 11.));
+        float g = step(.94, hash(vec2(band, floor(uTime * 18.)))) * uH;          // глитч-полосы
+        uv.x += (hash(vec2(band, 7.)) - .5) * .05 * g;
+        vec4 c = texture2D(tex, uv);
+        vec4 cr = texture2D(tex, uv + vec2(.004 * uH, 0.));                       // цветовой сдвиг (как у плохого проектора)
+        vec4 cb = texture2D(tex, uv - vec2(.004 * uH, 0.));
+        float a = max(c.a, max(cr.a, cb.a) * uH * .6);
+        vec3 col = a > .001 ? vec3(cr.r, c.g, cb.b) / max(c.a, .001) : vec3(0.);
+        col = toSRGB(min(col, vec3(1.)));
+        // проявление снизу вверх по «шуму» - как сборка из света
+        float n = noise(uv * vec2(24., 48.) + uTime * .7) * .6 + noise(uv * vec2(110., 220.)) * .4;
+        float front = uP * 1.3 - .15;
+        float d = front - (uv.y + (n - .5) * .18);
+        float vis = smoothstep(0., .02, d);
+        float edge = (1. - smoothstep(0., .06, d)) * step(-.02, d);
+        float lum = dot(col, vec3(.299, .587, .114));
+        vec3 holo = mix(vec3(.30, .82, 1.), vec3(1., .45, .92), smoothstep(.2, .9, uv.y)) * (.45 + lum * 1.5);
+        float scan = .74 + .26 * sin(gl_FragCoord.y * 1.4 - uTime * 16.);
+        holo *= scan;
+        col = mix(col, holo, uH);
+        col += edge * uH * vec3(.7, .97, 1.) * 1.8;
+        col += uFlash * vec3(.8, .9, 1.);
+        float flick = 1. - uH * (.10 + .16 * hash(vec2(floor(uTime * 26.), 3.)));
+        float alpha = a * vis * flick * mix(1., .8, uH);
+        alpha = max(alpha, edge * a * uH);
+        // искры у фронта сборки - и вокруг силуэта
+        float sp = step(.988, hash(floor(gl_FragCoord.xy / 3.) + floor(uTime * 9.)));
+        sp *= (1. - smoothstep(0., .1, abs(d))) * uH * step(.001, texture2D(tex, uv + vec2(0., .03)).a + a);
+        col = mix(col, vec3(.8, .97, 1.), sp); alpha = max(alpha, sp * .9);
+        gl_FragColor = vec4(col * alpha, alpha);
+      }`,
+  });
+  HOLO.scene = new THREE.Scene();
+  HOLO.scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), HOLO.mat));
+}
+const easeIO = (x) => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+// где у Евы ноги и макушка (в пикселях окна) - Python ставит окно так, чтобы она стояла в шаре
+window.feetPx = () => {
+  if (!vrm) return null;
+  const v = vrm.scene.position.clone().project(camera);
+  const head = vrm.humanoid.getNormalizedBoneNode('head').getWorldPosition(new THREE.Vector3());
+  head.y += 0.12; head.project(camera);
+  return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight, (1 - head.y) / 2 * innerHeight];
+};
+window.entrance = (type, opt) => {
+  opt = opt || {};
+  HOLO.t1 = opt.t1 ?? 1.3; HOLO.t2 = opt.t2 ?? 1.9; HOLO.t3 = opt.t3 ?? 0.8; HOLO.s0 = opt.s0 ?? 1;
+  if (!HOLO.rt) holoSetup();
+  HOLO.on = true; HOLO.t = 0;
+  const f = window.feetPx() || [innerWidth / 2, innerHeight];
+  const cv = renderer.domElement;
+  cv.style.transformOrigin = `${f[0]}px ${f[1]}px`;
+  cv.style.transform = `scale(${HOLO.s0})`;
+  cv.style.opacity = '1';
+  HOLO.filter0 = cv.style.filter || '';
+  console.log('[ВХОД] ' + type);
+  return true;
+};
+function holoTick(dt) {
+  HOLO.t += dt;
+  const { t, t1, t2, t3 } = HOLO, cv = renderer.domElement;
+  let p = 1, h = 1, s = 1, flash = 0;
+  if (t < t1) { p = easeIO(t / t1) * .92 + .08; s = HOLO.s0; }
+  else if (t < t1 + t2) { const k = easeIO((t - t1) / t2); s = HOLO.s0 + (1 - HOLO.s0) * k; }
+  else if (t < t1 + t2 + t3) { const k = (t - t1 - t2) / t3; h = 1 - easeIO(k); flash = Math.max(0, .55 - k * 1.6); }
+  else { HOLO.on = false; cv.style.transform = ''; cv.style.filter = HOLO.filter0; console.log('[ВХОД] готово'); return; }
+  cv.style.transform = s < 0.999 ? `scale(${s.toFixed(4)})` : '';
+  const glow = (h * 14 + flash * 30).toFixed(1);                  // ореол голограммы
+  cv.style.filter = HOLO.filter0 + ` drop-shadow(0 0 ${glow}px rgba(90,200,255,${(.55 * h + flash).toFixed(2)}))`;
+  const u = HOLO.mat.uniforms;
+  u.uP.value = p; u.uH.value = h; u.uFlash.value = flash; u.uTime.value = clock.elapsedTime;
+}
+
+// =====================================================================
+// ВХОД ПЕШКОМ: из панели Ева спрыгивает вниз и идёт в свой угол (окно двигает Python)
+// =====================================================================
+const WALKIN = { lock: false, yaw: 0, yawGoal: 0, info: null, jump: null, walk: null, loading: false };
+const INTRO_FILES = { jump: 'anim/new/Jumping Down.fbx', walk: 'anim/new/Female Walk.fbx' };
+function hipsTrack(clip) {
+  const name = vrm.humanoid.getNormalizedBoneNode('hips').name + '.position';
+  return clip.tracks.find((t) => t.name === name);
+}
+async function introLoad() {
+  if (WALKIN.loading || WALKIN.info) return;
+  WALKIN.loading = true;
+  const info = { jump: null, walk: null };
+  try {                                                   // ходьба: скорость шага (м/с) - чтобы окно ехало без «скольжения»
+    const url = VRMA_FOLDER + INTRO_FILES.walk.split('/').map(encodeURIComponent).join('/');
+    const c = await loadMixamoClip(url, { full: true });
+    const tr = hipsTrack(c);
+    if (tr) {
+      const it = tr.createInterpolant(), D = c.duration, t1 = Math.max(0.2, D - LOOP_BLEND);
+      const a = it.evaluate(0).slice(), b = it.evaluate(t1).slice();
+      info.walk = { speed: Math.max(0.6, Math.min(2.2, Math.hypot(b[0] - a[0], b[2] - a[2]) / t1)) };
+    } else info.walk = { speed: 1.2 };
+    WALKIN.walk = lockInPlace(c);
+  } catch (e) { console.warn('Ходьба не загрузилась: ' + e); }
+  try {                                                   // прыжок вниз: убираем «падение» бёдер - вниз поедет само окно
+    const url = VRMA_FOLDER + INTRO_FILES.jump.split('/').map(encodeURIComponent).join('/');
+    const c = await loadMixamoClip(url, { once: true, full: true });
+    const tr = hipsTrack(c);
+    if (tr) {
+      const it = tr.createInterpolant(), D = c.duration, N = Math.ceil(D * 30);
+      const Y = []; for (let i = 0; i <= N; i++) Y.push(it.evaluate(Math.min(D, i / 30))[1]);
+      const ys = Y[0], ye = Y[N], drop = ys - ye;
+      let take = 0, land = D;
+      if (drop > 0.15) {
+        let iLand = Y.findIndex((y) => y <= ye + 0.04);
+        if (iLand < 0) iLand = N;
+        let iTake = iLand; while (iTake > 0 && Y[iTake] < ys - 0.12 * drop) iTake--;
+        take = iTake / 30; land = Math.max(take + 0.1, iLand / 30);
+      }
+      const fall = (t) => drop <= 0.15 ? 0 : t <= take ? 0 : t >= land ? 1 : Math.pow((t - take) / (land - take), 2);
+      const v = tr.values;
+      for (let i = 0; i < tr.times.length; i++) v[i * 3 + 1] += drop > 0.15 ? drop * fall(tr.times[i]) : 0;
+      // без подготовки (она выглядит как перелезание через стенку): начинаем почти сразу с отрыва
+      const skip = Math.max(0, take - 0.2);
+      info.jump = { dur: D - skip, take: take - skip, land: land - skip, drop, skip };
+    }
+    WALKIN.jump = lockInPlace(c);
+  } catch (e) { console.warn('Прыжок не загрузился: ' + e); }
+  WALKIN.info = info;
+  console.log('[ВХОД] пешком: ' + JSON.stringify(info));
+}
+// сколько пикселей окна в одном метре (по росту Евы) - для скорости шага
+function pxPerMeter() {
+  const f = window.feetPx(); if (!f) return 300;
+  const head = vrm.humanoid.getNormalizedBoneNode('head').getWorldPosition(new THREE.Vector3());
+  return Math.max(50, (f[1] - f[2]) / (head.y + 0.12));
+}
+window.introInfo = () => {
+  if (!vrm) return null;
+  if (!WALKIN.info) { introLoad(); return null; }
+  const i = WALKIN.info;
+  return { jump: i.jump, speed: i.walk ? i.walk.speed : 1.17, walkPx: i.walk ? i.walk.speed * pxPerMeter() : 0, hasWalk: !!WALKIN.walk, hasJump: !!WALKIN.jump };
+};
+window.introStep = (step, arg) => {
+  if (!vrm || !mixer) return;
+  if (step === 'begin') { WALKIN.lock = true; return; }
+  if (step === 'face') { WALKIN.yawGoal = (+arg || 0) * Math.PI / 2; return; }
+  if (step === 'jump' && WALKIN.jump) {
+    const a = mixer.clipAction(WALKIN.jump);
+    if (activeActions.has(a)) { a.stop(); activeActions.delete(a); }
+    a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true;
+    startAction(a, 0); shotAction = a; shotKind = 'intro';
+    a.time = (WALKIN.info && WALKIN.info.jump && WALKIN.info.jump.skip) || 0;
+    return;
+  }
+  if (step === 'slow') {                                   // в полёте окно падает дольше - замедляем прыжок
+    if (WALKIN.jump) mixer.clipAction(WALKIN.jump).timeScale = Math.max(0.15, +arg || 1);
+    return;
+  }
+  if (step === 'walk' && WALKIN.walk) {
+    if (shotAction) { shotAction = null; shotJustEnded = true; }
+    baseClip = WALKIN.walk; crossTo(WALKIN.walk);
+    return;
+  }
+  if (step === 'end') {
+    WALKIN.yawGoal = 0; WALKIN.lock = false;
+    if (shotAction && shotKind === 'intro') { shotAction = null; shotJustEnded = true; }
+    baseClip = null; directorEnter(prevState || 'idle');
+  }
+};
+
+// =====================================================================
+// ПОЯВЛЕНИЯ (окно стоит, движется Ева). Python ставит окно у главного окна Евы:
+//   edge    - выходит из-за края главного окна, как из-за стены (cutX - где край, px окна аватара)
+//   landing - падает сверху и приземляется по-супергеройски
+// window.entranceIn(type, {cutX}), window.entranceState() - 'idle' | 'wait' | 'run' | 'done'
+// =====================================================================
+const ENTR = { on: false, type: '', phase: '', t: 0, state: 'idle', x: 0, y: 0, vy: 0, clips: {}, pending: null, cut: null };
+const ENTR_FILES = {
+  edge: { wave: ['anim/new/Waving (2).fbx', { full: true }] },
+  landing: { fall: ['anim/new/Falling Idle.fbx', { full: true, abs: true }], land: ['anim/new/Hard Landing.fbx', { full: true, abs: true, once: true }] },
+};
+async function entrLoad(type) {
+  const need = ENTR_FILES[type] || {};
+  for (const [k, [f, opt]] of Object.entries(need)) {
+    if (ENTR.clips[k]) continue;
+    try {
+      const c = await loadMixamoClip(VRMA_FOLDER + f.split('/').map(encodeURIComponent).join('/'), opt);
+      ENTR.clips[k] = lockInPlace(c);
+    } catch (e) { console.warn('[ПОЯВЛЕНИЕ] не загрузилось ' + f + ': ' + e); }
+  }
+  if (type === 'edge' && !WALKIN.info) await introLoad();
+}
+// точка в плоскости Евы (z = 0) по координатам экрана (-1..1)
+function screenToWorld(nx, ny) {
+  const v = new THREE.Vector3(nx, ny, 0.5).unproject(camera).sub(camera.position);
+  return camera.position.clone().addScaledVector(v, -camera.position.z / v.z);
+}
+function entrPlay(clip, opts = {}) {
+  const a = mixer.clipAction(clip);
+  if (activeActions.has(a)) { a.stop(); activeActions.delete(a); }
+  if (opts.once) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; } else a.setLoop(THREE.LoopRepeat, Infinity);
+  a.timeScale = opts.speed || 1;
+  if (shotAction) { shotAction = null; shotJustEnded = true; }
+  baseClip = clip; crossTo(clip, !!opts.instant);
+  if (opts.from !== undefined) a.time = opts.from;
+  return a;
+}
+window.entranceIn = (type, opt) => {
+  if (!vrm || !mixer) return false;
+  ENTR.pending = type; ENTR.state = 'wait'; ENTR.opt = opt || {};
+  entrLoad(type).then(() => { if (ENTR.pending === type) entrBegin(type); });
+  return true;
+};
+window.entranceState = () => ENTR.state;
+function entrBegin(type) {
+  ENTR.pending = null;
+  const C = ENTR.clips;
+  const ok = { edge: WALKIN.walk && C.wave, landing: C.fall && C.land }[type];
+  if (!ok) { console.log('[ПОЯВЛЕНИЕ] нет анимаций для ' + type + ' - просто появляюсь'); renderer.domElement.style.opacity = '1'; ENTR.state = 'done'; return; }
+  if (PORTAL.home === null) PORTAL.home = vrm.scene.position.x;
+  if (WALKIN.base === undefined) WALKIN.base = vrm.scene.rotation.y;
+  ENTR.on = true; ENTR.type = type; ENTR.t = 0; ENTR.state = 'run'; ENTR.cut = null;
+  WALKIN.lock = true;
+  vrm.scene.position.set(PORTAL.home, 0, vrm.scene.position.z);
+  const face = (yaw) => { WALKIN.yawGoal = WALKIN.yaw = yaw; vrm.scene.rotation.y = WALKIN.base + yaw; };
+  if (type === 'edge') {
+    const cx = ENTR.opt.cutX;
+    if (cx !== undefined && cx !== null) {                 // край главного окна - «стена», из-за неё и выходит
+      ENTR.cut = cx;
+      ENTR.x = screenToWorld(cx / innerWidth * 2 - 1, 0).x - 0.45;
+    } else ENTR.x = screenToWorld(-1, 0).x - 0.45;          // главного окна нет - из-за края своего окна
+    vrm.scene.position.x = ENTR.x; face(Math.PI / 2);
+    mixer.clipAction(WALKIN.walk).timeScale = 0.9;
+    entrPlay(WALKIN.walk, { instant: true, speed: 0.9 }); ENTR.phase = 'walk';
+  } else if (type === 'landing') {
+    ENTR.y = screenToWorld(0, 1).y + 0.2;                  // над верхним краем окна
+    ENTR.vy = 0; vrm.scene.position.y = ENTR.y; face(0);
+    entrPlay(C.fall, { instant: true }); ENTR.phase = 'fall';
+  }
+  ENTR.shown = false;            // покажем окно со следующего кадра - когда новая поза уже применится
+  console.log('[ПОЯВЛЕНИЕ] ' + type);
+}
+function entrFinish() {
+  ENTR.on = false; ENTR.state = 'done'; ENTR.cut = null;
+  vrm.scene.position.set(PORTAL.home, 0, vrm.scene.position.z);
+  window.introStep('end');
+  if (WALKIN.walk) mixer.clipAction(WALKIN.walk).timeScale = 1;
+  console.log('[ПОЯВЛЕНИЕ] Ева на месте');
+}
+function entrTick(dt) {
+  if (!ENTR.on) return;
+  if (!ENTR.shown) { ENTR.shown = true; renderer.domElement.style.opacity = '1'; }
+  ENTR.t += dt;
+  const t = ENTR.t, C = ENTR.clips;
+  const next = (p) => { ENTR.phase = p; ENTR.t = 0; };
+  if (ENTR.type === 'edge') {
+    if (ENTR.phase === 'walk') {
+      const v = ((WALKIN.info && WALKIN.info.walk && WALKIN.info.walk.speed) || 1.17) * 0.9;
+      ENTR.x = Math.min(PORTAL.home, ENTR.x + v * dt); vrm.scene.position.x = ENTR.x;
+      if (ENTR.x >= PORTAL.home) { ENTR.cut = null; WALKIN.yawGoal = 0; entrPlay(C.wave); next('wave'); }
+    } else if (ENTR.phase === 'wave' && t > 1.6) entrFinish();
+  } else if (ENTR.type === 'landing') {
+    if (ENTR.phase === 'fall') {
+      ENTR.vy += 9.8 * dt; ENTR.y -= ENTR.vy * dt;
+      if (ENTR.y <= 1.43) { vrm.scene.position.y = 0; entrPlay(C.land, { instant: true, once: true }); next('land'); }
+      else vrm.scene.position.y = ENTR.y;
+    } else if (ENTR.phase === 'land') {
+      const a = mixer.clipAction(C.land);
+      if (a.time >= C.land.duration - 0.05 || t > C.land.duration + 0.3) entrFinish();
+    }
+  }
+}
+
+// =====================================================================
+// СОН: 10 минут без общения - Ева ложится и спит; обратился - просыпается
+//   window.sleepStart(), window.sleepEnd(), window.sleepState() - 'awake' | 'falling' | 'asleep' | 'waking'
+// =====================================================================
+const SLEEP = { state: 'awake', t: 0, clips: {}, pendingState: null };
+async function sleepLoad() {
+  const files = { sit: ['anim/new/Standing Up.fbx', { full: true, abs: true, once: true }],     // встаёт из положения сидя
+                  lie: ['anim/new/Laying Idle.fbx', { full: true, abs: true }] };              // лежит на спине
+  for (const [k, [f, opt]] of Object.entries(files)) {
+    if (SLEEP.clips[k]) continue;
+    try { SLEEP.clips[k] = lockInPlace(await loadMixamoClip(VRMA_FOLDER + f.split('/').map(encodeURIComponent).join('/'), opt)); }
+    catch (e) { console.warn('[СОН] не загрузилось ' + f + ': ' + e); }
+  }
+  return SLEEP.clips.sit && SLEEP.clips.lie;
+}
+const SIT_STAND = 4.2;     // в «Standing Up» к 4.2 с Ева уже стоит
+window.sleepState = () => SLEEP.state;
+window.sleepStart = async () => {
+  if (SLEEP.state !== 'awake' || ENTR.on || PORTAL.on || !vrm || !mixer) return false;
+  if (!(await sleepLoad())) return false;
+  if (WALKIN.base === undefined) WALKIN.base = vrm.scene.rotation.y;
+  WALKIN.lock = true; WALKIN.yawGoal = Math.PI / 2;            // ложится боком - так её хорошо видно
+  fadeOverride = 0.8;
+  entrPlay(SLEEP.clips.sit, { once: true, speed: -0.9, from: SIT_STAND });   // садится (то же «встаёт», задом наперёд)
+  SLEEP.state = 'sitting'; SLEEP.t = 0;
+  console.log('[СОН] Ева засыпает');
+  return true;
+};
+window.sleepEnd = () => {
+  if (SLEEP.state === 'awake' || SLEEP.state === 'waking' || SLEEP.state === 'rising') return;
+  window.setEyes && window.setEyes(false);
+  fadeOverride = 1.1;
+  const a = entrPlay(SLEEP.clips.sit, { once: true, from: 0 });          // приподнимается и садится
+  a.timeScale = 0;
+  SLEEP.state = 'waking'; SLEEP.t = 0;
+  console.log('[СОН] Ева просыпается');
+};
+function sleepTick(dt) {
+  if (SLEEP.state === 'awake') return;
+  SLEEP.t += dt;
+  const sit = SLEEP.clips.sit && mixer.clipAction(SLEEP.clips.sit);
+  if (SLEEP.state === 'sitting' && sit && (sit.time <= 0.05 || SLEEP.t > 6)) {
+    fadeOverride = 1.4;                                        // плавно откидывается на спину
+    entrPlay(SLEEP.clips.lie, { speed: 0.6 });
+    SLEEP.state = 'lying'; SLEEP.t = 0;
+  } else if (SLEEP.state === 'lying' && SLEEP.t > 1.5) {
+    window.setEyes && window.setEyes(true);
+    fadeOverride = 0; SLEEP.state = 'asleep';
+  } else if (SLEEP.state === 'waking' && SLEEP.t > 1.1) {
+    sit.timeScale = 1.15;                                       // встаёт
+    SLEEP.state = 'rising'; SLEEP.t = 0;
+  } else if (SLEEP.state === 'rising') {
+    if (sit.time > 2.8) WALKIN.yawGoal = 0;                     // уже на ногах - поворачивается к тебе
+    if (sit.time >= SIT_STAND || SLEEP.t > 5) {
+      SLEEP.state = 'awake'; fadeOverride = 0;
+      WALKIN.lock = false; baseClip = null;
+      directorEnter(SLEEP.pendingState || prevState || 'idle');
+      SLEEP.pendingState = null;
+      console.log('[СОН] Ева проснулась');
+    }
+  }
+}
+
+// ?probe=1 - для разработчика: как двигаются бёдра в анимации (подбор появлений)
+if (_qst.has('probe')) {
+  window.__entr = ENTR;
+  window.__dbg = () => ({ hipsY: +vrm.humanoid.getNormalizedBoneNode('hips').getWorldPosition(new THREE.Vector3()).y.toFixed(2),
+    base: baseAction && baseAction.getClip().name.split('/').pop(), w: [...activeActions].map(([a, w]) => a.getClip().name.split('/').pop().slice(-18) + ':' + w.toFixed(2)),
+    time: baseAction && +baseAction.time.toFixed(2), op: renderer.domElement.style.opacity, sceneY: vrm.scene.position.y });
+}
+if (_qst.has('probe')) {
+  const cache = {};
+  window.__showClip = async (f, t, yaw = 0) => {            // поставить позу из анимации на момент t (для подбора)
+    if (!cache[f]) cache[f] = lockInPlace(await loadMixamoClip(VRMA_FOLDER + f.split('/').map(encodeURIComponent).join('/'), { full: true, abs: true, once: true }));
+    WALKIN.lock = true; if (WALKIN.base === undefined) WALKIN.base = vrm.scene.rotation.y;
+    WALKIN.yaw = WALKIN.yawGoal = yaw; vrm.scene.rotation.y = WALKIN.base + yaw;
+    const a = entrPlay(cache[f], { instant: true, once: true, from: t }); a.timeScale = 0;
+    return +cache[f].duration.toFixed(2);
+  };
+}
+if (_qst.has('probe')) window.__probe = async (f) => {
+  const c = await loadMixamoClip(VRMA_FOLDER + f.split('/').map(encodeURIComponent).join('/'), { once: true, full: true, abs: true });
+  const it = hipsTrack(c).createInterpolant(), out = [];
+  for (let k = 0; k <= 8; k++) { const t = c.duration * k / 8, v = it.evaluate(t); out.push([+t.toFixed(2), +v[0].toFixed(2), +v[1].toFixed(2), +v[2].toFixed(2)]); }
+  return { dur: +c.duration.toFixed(2), rest: vrmHipsRest ? +vrmHipsRest.y.toFixed(2) : null, hips: out };
+};
+function introTick(dt) {
+  if (Math.abs(WALKIN.yaw - WALKIN.yawGoal) < 1e-4) return;
+  WALKIN.yaw += (WALKIN.yawGoal - WALKIN.yaw) * Math.min(1, dt * 7);
+  if (Math.abs(WALKIN.yaw - WALKIN.yawGoal) < 1e-3) WALKIN.yaw = WALKIN.yawGoal;
+  if (WALKIN.base === undefined) WALKIN.base = vrm.scene.rotation.y;   // у VRM 0.x модель уже развёрнута на 180°
+  vrm.scene.rotation.y = WALKIN.base + WALKIN.yaw;
+}
+
+// =====================================================================
+// ПОРТАЛ: Ева выходит из зелёного портала и уходит в него (окно стоит на месте, движется сама Ева)
+//   window.portalIn()  - портал открывается слева, Ева выходит и встаёт на своё место
+//   window.portalOut() - Ева поворачивается, стреляет порталом из пушки и уходит в него
+//   window.portalState() - 'idle' | 'wait' | 'in' | 'out' | 'shown' | 'gone'
+// =====================================================================
+const PORTAL = { on: false, state: 'idle', phase: '', t: 0, open: 0, mat: null, scene: null, home: null,
+                 x: 0, px: 0, pose: 0, gun: null, shot: null, cutOn: false, pending: null, flash: 0 };
+const PCFG = {
+  side: -1,          // портал слева от Евы (справа край экрана)
+  dist: 0.8,         // расстояние от Евы до портала, м
+  aspect: 0.46,      // портал виден чуть сбоку - вытянутый овал (ширина / высота)
+  hFactor: 1.05,     // высота портала относительно роста Евы
+  walkScale: 0.85,   // шаг чуть спокойнее обычного
+};
+const _pe = new THREE.Euler();
+const qE = (x, y, z) => new THREE.Quaternion().setFromEuler(_pe.set(x, y, z, 'XYZ'));
+const D2R = Math.PI / 180;
+// поза «стреляю из пушки» левой рукой (она ближе к зрителю, когда Ева смотрит влево)
+const AIM_POSE = {
+  leftUpperArm: qE(0, -90 * D2R, -12 * D2R),                 // рука вперёд, чуть вверх
+  leftLowerArm: qE(90 * D2R, 0, 0),                          // кисть «большим пальцем вверх»
+  leftHand: qE(0, 0, 0),
+};
+for (const f of ['Middle', 'Ring', 'Little']) {
+  AIM_POSE['left' + f + 'Proximal'] = qE(0, 0, 75 * D2R);
+  AIM_POSE['left' + f + 'Intermediate'] = qE(0, 0, 85 * D2R);
+}
+AIM_POSE.leftIndexProximal = qE(0, 0, 25 * D2R);           // палец на «курке»
+AIM_POSE.leftIndexIntermediate = qE(0, 0, 40 * D2R);
+const GUN_LEN = 0.24;        // длина своей пушки (portal_gun.glb), м: больше число - больше пушка
+const GUN_CFG = { pos: [-0.03, -0.01, -0.035], rot: [-90 * D2R, Math.PI, 0], scale: 1 };   // как пушка сидит в ладони
+
+function portalSound(name) {
+  if (_qst.get('snd') === '0') return;
+  // нет portal_open.mp3 - играем твой звук появления (sounds/intro.mp3)
+  const fallback = name === 'portal_open.mp3' ? 'intro.mp3' : null;
+  try {
+    const a = new Audio('sounds/' + name); a.volume = 0.85;
+    a.addEventListener('error', () => { if (fallback) { const b = new Audio('sounds/' + fallback); b.volume = 0.85; b.play().catch(() => {}); } });
+    a.play().catch(() => {});
+  } catch (e) { /* звука нет - не страшно */ }
+}
+
+function makeGun() {
+  // своя «портальная пушка»: белый корпус, светящаяся зелёная колба сверху, зелёное сопло
+  const g = new THREE.Group();
+  const white = new THREE.MeshLambertMaterial({ color: 0xe8ecef });
+  const grey = new THREE.MeshLambertMaterial({ color: 0x5b6670 });
+  const glow = new THREE.MeshBasicMaterial({ color: 0x7dff4a });
+  const glass = new THREE.MeshBasicMaterial({ color: 0xb8ff8a, transparent: true, opacity: 0.85 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.042, 0.036), white); body.position.set(0.02, 0.0, 0); g.add(body);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.075, 0.03), grey); grip.position.set(-0.025, -0.05, 0); grip.rotation.z = 0.25; g.add(grip);
+  const tube = new THREE.Mesh(new THREE.CapsuleGeometry(0.013, 0.06, 4, 10), glass); tube.rotation.z = Math.PI / 2; tube.position.set(0.02, 0.034, 0); g.add(tube);
+  const core = new THREE.Mesh(new THREE.CapsuleGeometry(0.007, 0.055, 4, 8), glow); core.rotation.z = Math.PI / 2; core.position.copy(tube.position); g.add(core);
+  const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.02, 0.03, 14), grey); nose.rotation.z = Math.PI / 2; nose.position.set(0.093, 0, 0); g.add(nose);
+  const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.006, 14), glow); tip.rotation.z = Math.PI / 2; tip.position.set(0.11, 0, 0); g.add(tip);
+  g.userData.muzzle = new THREE.Vector3(0.115, 0, 0);
+  return g;
+}
+async function loadGun() {
+  // своя модель (если положить vrma/props/portal_gun.glb) - иначе наша простая
+  PORTAL.gun = 'loading';
+  let g = null;
+  try {
+    const gl = await new Promise((ok, bad) => packURL('props/portal_gun.glb').then((u) => new GLTFLoader().load(u, ok, undefined, bad), bad));
+    g = new THREE.Group(); const m = gl.scene;
+    // ствол - по длинной стороне; длина пушки GUN_LEN; рукоять (низ, ближе к заду) - в кулаке Евы
+    const inner = new THREE.Group(); inner.add(m);
+    const s0 = new THREE.Box3().setFromObject(m).getSize(new THREE.Vector3());
+    if (s0.z > s0.x) m.rotation.y = -Math.PI / 2;          // у моделей Kenney ствол смотрит в -Z
+    m.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(inner), size = box.getSize(new THREE.Vector3());
+    const k = GUN_LEN / Math.max(size.x, size.z);
+    inner.scale.setScalar(k);
+    const grip = new THREE.Vector3(box.min.x + size.x * 0.3, box.min.y + size.y * 0.3, (box.min.z + box.max.z) / 2).multiplyScalar(k);
+    inner.position.set(-0.025 - grip.x, -0.05 - grip.y, -grip.z);
+    g.add(inner); g.userData.muzzle = new THREE.Vector3(inner.position.x + box.max.x * k, inner.position.y + (box.min.y + size.y * 0.7) * k, 0);
+    console.log('[ПОРТАЛ] пушка: своя модель portal_gun.glb');
+  } catch (e) { g = makeGun(); }
+  g.position.fromArray(GUN_CFG.pos); g.rotation.fromArray(GUN_CFG.rot); g.scale.setScalar(0.0001);
+  g.visible = false;
+  vrm.humanoid.getNormalizedBoneNode('leftHand').add(g);
+  PORTAL.gun = g;
+}
+
+function portalSetup() {
+  if (!HOLO.rt) holoSetup();
+  PORTAL.mat = new THREE.ShaderMaterial({
+    transparent: true, blending: THREE.NoBlending, depthTest: false, depthWrite: false,
+    uniforms: { tex: { value: HOLO.rt.texture }, uP: { value: new THREE.Vector3() }, uOpen: { value: 0 }, uTime: { value: 0 },
+                uAsp: { value: PCFG.aspect }, uCut: { value: 0 }, uSide: { value: PCFG.side }, uCutOn: { value: 0 },
+                uShot: { value: new THREE.Vector4() }, uDpr: { value: 1 }, uFlash: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) }, uSeam: { value: 1 } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+    fragmentShader: `
+      varying vec2 vUv; uniform sampler2D tex; uniform vec3 uP; uniform vec4 uShot;
+      uniform float uOpen, uTime, uAsp, uCut, uSide, uCutOn, uDpr, uFlash, uSeam; uniform vec2 uRes;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f);
+        return mix(mix(hash(i), hash(i + vec2(1., 0.)), u.x), mix(hash(i + vec2(0., 1.)), hash(i + vec2(1., 1.)), u.x), u.y); }
+      float fbm(vec2 p){ float v = 0., a = .5; for (int i = 0; i < 5; i++){ v += a * noise(p); p = p * 2.03 + vec2(1.7, 9.2); a *= .5; } return v; }
+      vec3 toSRGB(vec3 c){ c = max(c, 0.); return mix(c * 12.92, 1.055 * pow(c, vec3(1. / 2.4)) - .055, step(.0031308, c)); }
+      vec4 portal(vec2 fc){
+        if (uOpen <= .001) return vec4(0.);
+        vec2 d = fc - uP.xy; d.x /= uAsp; d /= uP.z * .5;
+        float r = length(d) / uOpen, a = atan(d.y, d.x);
+        float edge = 1. + .08 * (noise(vec2(a * 2.5 + uTime * 1.4, uTime * .8)) - .5) + .035 * sin(a * 6. - uTime * 3.5);
+        float rr = r / edge;
+        if (rr > 1.7) return vec4(0.);
+        float sw = a + 5.5 * (1. - min(rr, 1.)) + uTime * 1.6;                 // закрученная воронка
+        vec2 sp = vec2(cos(sw), sin(sw)) * rr;
+        float n = fbm(sp * 3.3 + vec2(0., -uTime * .7));
+        float arms = .5 + .5 * sin(a * 3. + log(max(rr, .03)) * 7. - uTime * 5.);
+        vec3 deep = vec3(.02, .30, .06), mid = vec3(.20, .82, .16), lime = vec3(.74, 1., .30), core = vec3(.93, 1., .74);
+        vec3 col = mix(deep, mid, smoothstep(.28, .72, n));
+        col = mix(col, lime, smoothstep(.55, .98, n * .75 + arms * .42));
+        col = mix(col, core, exp(-rr * rr * 6.) * .8);
+        float inside = 1. - smoothstep(.96, 1., rr);
+        float rim = exp(-pow((rr - 1.) * 15., 2.));
+        col = col * inside + rim * vec3(.70, 1., .38) * 1.25;
+        float glow = (1. - inside) * exp(-(rr - 1.) * 6.5) * .6;
+        float alpha = max(inside * .95, min(1., rim * 1.2));
+        vec3 outc = min(col, vec3(1.)) * alpha + vec3(.30, 1., .22) * glow * (1. - alpha);
+        float spark = step(.982, hash(floor(vec2(a * 9. + uTime * 2., rr * 26. - uTime * 9.)))) * smoothstep(1.6, 1.05, rr) * step(1., rr);
+        outc += spark * vec3(.75, 1., .55);
+        alpha = max(alpha, max(glow, spark * .9));
+        float fl = uFlash * exp(-rr * rr * 1.5);
+        outc += fl * vec3(.6, 1., .5); alpha = max(alpha, fl);
+        return vec4(min(outc, vec3(1.)), min(alpha, 1.));
+      }
+      void main(){
+        vec2 fc = gl_FragCoord.xy;
+        vec4 c = texture2D(tex, vUv);
+        float dx = (fc.x - uCut) * uSide;                                     // > 0 - уже «за» порталом
+        float vis = 1. - uCutOn * smoothstep(-1.5 * uDpr, 1.5 * uDpr, dx);
+        vec3 eva = c.a > .001 ? toSRGB(min(c.rgb / c.a, vec3(1.))) : vec3(0.);
+        float ea = c.a * vis;
+        float seam = uSeam * uCutOn * step(.02, c.a) * (1. - smoothstep(0., 7. * uDpr, abs(dx)));   // светящийся срез
+        vec4 E = vec4(eva * ea + vec3(.55, 1., .4) * seam * (1. - ea * .5), max(ea, seam * .9));
+        vec4 P = portal(fc);
+        // у краёв окна свечение плавно гаснет - иначе видна прямая граница прозрачного окна
+        float edgeD = min(min(fc.x, fc.y), min(uRes.x - fc.x, uRes.y - fc.y));
+        P *= smoothstep(0., 36. * uDpr, edgeD);
+        vec4 o = E + P * (1. - E.a);
+        if (uShot.w > 0.) {                                                    // летящий заряд
+          float dd = length(fc - uShot.xy) / max(uShot.z, 1.);
+          float b = exp(-dd * dd * 1.6) * uShot.w;
+          o.rgb = o.rgb * (1. - b) + vec3(.80, 1., .55) * b; o.a = max(o.a, b);
+        }
+        gl_FragColor = vec4(min(o.rgb, vec3(1.)), min(o.a, 1.));
+      }`,
+  });
+  PORTAL.scene = new THREE.Scene();
+  PORTAL.scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), PORTAL.mat));
+}
+
+// мировые координаты -> пиксели буфера (y снизу, как gl_FragCoord)
+function toFrag(v3) {
+  const v = v3.clone().project(camera), dpr = renderer.getPixelRatio();
+  return [(v.x + 1) / 2 * innerWidth * dpr, (v.y + 1) / 2 * innerHeight * dpr];
+}
+let _tall = null;
+function portalGeom() {
+  const dpr = renderer.getPixelRatio();
+  if (_tall === null) {                                                  // рост Евы, м (меряем один раз, стоя)
+    const head = vrm.humanoid.getNormalizedBoneNode('head').getWorldPosition(new THREE.Vector3());
+    _tall = (head.y - vrm.scene.position.y) + 0.12;
+  }
+  const h = _tall * PCFG.hFactor;
+  const bottom = toFrag(new THREE.Vector3(PORTAL.px, vrm.scene.position.y, 0));
+  const top = toFrag(new THREE.Vector3(PORTAL.px, vrm.scene.position.y + h, 0));
+  const ph = top[1] - bottom[1];
+  const u = PORTAL.mat.uniforms;
+  u.uP.value.set(bottom[0], bottom[1] + ph * 0.53, ph);   // чуть над полом - низ свечения не упирается в край окна
+  u.uCut.value = bottom[0]; u.uDpr.value = dpr; u.uSide.value = PCFG.side;
+  u.uRes.value.set(innerWidth * dpr, innerHeight * dpr);
+}
+const easeOutBack = (x) => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const easeInBack = (x) => { const c1 = 1.6; return (c1 + 1) * x * x * x - c1 * x * x; };
+
+function portalBegin(mode) {
+  if (!vrm || !mixer) return false;
+  if (SLEEP.state !== 'awake') {                    // спит - сначала встаёт, потом уходит
+    if (SLEEP.state !== 'waking' && SLEEP.state !== 'rising') window.sleepEnd();
+    PORTAL.pending = mode; return true;
+  }
+  if (!PORTAL.mat) portalSetup();
+  if (!PORTAL.gun) loadGun();
+  if (PORTAL.home === null) PORTAL.home = vrm.scene.position.x;
+  PORTAL.px = PORTAL.home + PCFG.side * PCFG.dist;
+  if (!WALKIN.info) { introLoad(); PORTAL.pending = mode; return true; }   // сначала загрузим ходьбу
+  PORTAL.pending = null;
+  PORTAL.on = true; PORTAL.state = mode; PORTAL.t = 0; PORTAL.open = 0; PORTAL.flash = 0; PORTAL.shot = null; PORTAL.pose = 0;
+  WALKIN.lock = true;
+  if (WALKIN.base === undefined) WALKIN.base = vrm.scene.rotation.y;
+  if (mode === 'in') {
+    PORTAL.x = PORTAL.px + PCFG.side * 0.45;                               // ещё «по ту сторону»
+    vrm.scene.position.x = PORTAL.x;
+    WALKIN.yaw = WALKIN.yawGoal = -PCFG.side * Math.PI / 2;                // лицом туда, куда пойдёт
+    vrm.scene.rotation.y = WALKIN.base + WALKIN.yaw;
+    PORTAL.cutOn = true; PORTAL.phase = 'open';
+    renderer.domElement.style.opacity = '1';
+    portalSound('portal_open.mp3');
+  } else {
+    PORTAL.x = vrm.scene.position.x;
+    WALKIN.yawGoal = PCFG.side * Math.PI / 2;                             // поворачивается к будущему порталу
+    PORTAL.cutOn = false; PORTAL.phase = 'turn';
+  }
+  console.log('[ПОРТАЛ] ' + (mode === 'in' ? 'выход из портала' : 'уход в портал'));
+  return true;
+}
+window.portalIn = () => portalBegin('in');
+window.portalOut = () => portalBegin('out');
+window.portalState = () => PORTAL.pending ? 'wait' : PORTAL.state;
+window.portalDebug = PORTAL; PORTAL.aim = AIM_POSE; PORTAL.gunCfg = GUN_CFG;
+
+function walkStart() {
+  if (!WALKIN.walk) return;
+  if (shotAction) { shotAction = null; shotJustEnded = true; }
+  const a = mixer.clipAction(WALKIN.walk); a.timeScale = PCFG.walkScale;
+  baseClip = WALKIN.walk; crossTo(WALKIN.walk);
+}
+function walkStep(dt, goal) {
+  const v = ((WALKIN.info && WALKIN.info.walk && WALKIN.info.walk.speed) || 1.17) * PCFG.walkScale;
+  const dir = Math.sign(goal - PORTAL.x);
+  PORTAL.x += dir * v * dt;
+  const done = (goal - PORTAL.x) * dir <= 0;
+  if (done) PORTAL.x = goal;
+  vrm.scene.position.x = PORTAL.x;
+  return done;
+}
+function poseTick(w) {
+  if (w <= 0.001) return;
+  for (const [bone, q] of Object.entries(AIM_POSE)) {
+    const n = vrm.humanoid.getNormalizedBoneNode(bone);
+    if (n) n.quaternion.slerp(q, w);
+  }
+}
+
+function portalTick(dt) {
+  if (PORTAL.pending && WALKIN.info && SLEEP.state === 'awake') portalBegin(PORTAL.pending);
+  if (!PORTAL.on) return;
+  PORTAL.t += dt;
+  const t = PORTAL.t, ph = PORTAL.phase;
+  const next = (p) => { PORTAL.phase = p; PORTAL.t = 0; };
+  const g = PORTAL.gun && PORTAL.gun !== 'loading' ? PORTAL.gun : null;
+  if (PORTAL.state === 'in') {                                  // --- выход из портала ---
+    if (ph === 'open') {
+      PORTAL.open = easeOutBack(Math.min(1, t / 0.75));
+      if (t >= 0.75) { walkStart(); next('walk'); }
+    } else if (ph === 'walk') {
+      PORTAL.open = 1;
+      const done = walkStep(dt, PORTAL.home);
+      if ((PORTAL.x - PORTAL.px) * -PCFG.side > 0.45) PORTAL.cutOn = false;
+      if (done) { window.introStep('end'); mixer.clipAction(WALKIN.walk).timeScale = 1; next('stay'); }
+    } else if (ph === 'stay') {
+      if (t >= 0.35) { next('close'); portalSound('portal_close.mp3'); }
+    } else if (ph === 'close') {
+      const k = Math.min(1, t / 0.5);
+      PORTAL.open = Math.max(0, 1 - easeInBack(k)); PORTAL.flash = k > 0.8 ? (1 - k) * 3 : 0;
+      if (k >= 1) { PORTAL.on = false; PORTAL.open = 0; PORTAL.state = 'shown'; console.log('[ПОРТАЛ] Ева на месте'); }
+    }
+  } else if (PORTAL.state === 'out') {                          // --- уход в портал ---
+    if (ph === 'turn') {
+      if (t >= 0.45) next('aim');
+    } else if (ph === 'aim') {                                    // достаёт пушку и прицеливается
+      PORTAL.pose = easeIO(Math.min(1, t / 0.5));
+      if (g) { g.visible = true; g.scale.setScalar(Math.max(0.0001, easeOutBack(Math.min(1, t / 0.35)) * GUN_CFG.scale)); }
+      if (t >= 0.75) {
+        PORTAL.shot = { k: 0 };                                   // выстрел: короткая зелёная вспышка у ствола
+        portalSound('portal_shot.mp3');
+        portalSound('portal_open.mp3');
+        next('shoot');
+      }
+    } else if (ph === 'shoot') {                                  // вспышка у ствола, лёгкая отдача, портал сразу раскрывается
+      PORTAL.pose = 1 - 0.15 * Math.sin(Math.min(1, t / 0.18) * Math.PI);
+      PORTAL.shot.k = Math.min(1, t / 0.22);
+      PORTAL.open = easeOutBack(Math.min(1, t / 0.7)) * Math.min(1, t / 0.05);
+      if (t >= 0.22) { PORTAL.shot = null; PORTAL.t = t; PORTAL.phase = 'open'; }
+    } else if (ph === 'open') {
+      PORTAL.open = easeOutBack(Math.min(1, t / 0.7));
+      const k = Math.min(1, Math.max(0, t - 0.3) / 0.45);           // чуть любуется порталом, потом опускает руку
+      PORTAL.pose = 1 - easeIO(k);
+      if (g) g.scale.setScalar(Math.max(0.0001, (1 - k) * GUN_CFG.scale));
+      if (t >= 0.8) { if (g) g.visible = false; PORTAL.pose = 0; PORTAL.cutOn = true; walkStart(); next('walk'); }
+    } else if (ph === 'walk') {
+      PORTAL.open = 1;
+      if (walkStep(dt, PORTAL.px + PCFG.side * 0.5)) { next('close'); portalSound('portal_close.mp3'); }
+    } else if (ph === 'close') {
+      const k = Math.min(1, t / 0.5);
+      PORTAL.open = Math.max(0, 1 - easeInBack(k)); PORTAL.flash = k > 0.8 ? (1 - k) * 3 : 0;
+      if (k >= 1) {
+        PORTAL.on = false; PORTAL.open = 0; PORTAL.state = 'gone';
+        renderer.domElement.style.opacity = '0';
+        mixer.clipAction(WALKIN.walk).timeScale = 1;
+        console.log('[ПОРТАЛ] Ева ушла');
+      }
+    }
+  }
+  poseTick(PORTAL.pose);
+}
+// окно снова показали после ухода - вернуть Еву на место (дальше обычно сразу portalIn)
+window.portalReset = () => {
+  PORTAL.on = false; PORTAL.state = 'idle'; PORTAL.open = 0; PORTAL.pose = 0; PORTAL.cutOn = false; PORTAL.pending = null;
+  if (PORTAL.home !== null) vrm.scene.position.x = PORTAL.home;
+  window.introStep('end');
+  if (WALKIN.walk) mixer.clipAction(WALKIN.walk).timeScale = 1;
+  renderer.domElement.style.opacity = '1';
+};
+function portalRender() {
+  if (!PORTAL.mat) portalSetup();
+  if (PORTAL.home === null) PORTAL.home = vrm.scene.position.x;
+  PORTAL.px = PORTAL.home + PCFG.side * PCFG.dist;
+  portalGeom();
+  const u = PORTAL.mat.uniforms;
+  u.uSeam.value = 1;
+  u.uOpen.value = PORTAL.open; u.uTime.value = clock.elapsedTime; u.uCutOn.value = PORTAL.cutOn ? 1 : 0; u.uFlash.value = PORTAL.flash;
+  if (!PORTAL.on && ENTR.cut !== null) {                        // выходит из-за края главного окна
+    u.uOpen.value = 0; u.uCutOn.value = 1; u.uSide.value = -1; u.uCut.value = ENTR.cut * renderer.getPixelRatio();
+    u.uSeam.value = 0;                                          // у «стены» нет зелёного свечения
+  }
+  if (PORTAL.shot) {                                              // вспышка у ствола: ярко сразу, гаснет за ~0.2 с
+    const g = PORTAL.gun && PORTAL.gun !== 'loading' ? PORTAL.gun : null;
+    const m = g ? g.localToWorld(g.userData.muzzle.clone()) : vrm.humanoid.getNormalizedBoneNode('leftHand').getWorldPosition(new THREE.Vector3());
+    const f = toFrag(m), k = PORTAL.shot.k;
+    u.uShot.value.set(f[0], f[1], (7 + 6 * k) * renderer.getPixelRatio(), 1 - k * k);
+  } else u.uShot.value.w = 0;
+  renderer.setRenderTarget(HOLO.rt); renderer.setClearColor(0x000000, 0); renderer.clear();
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null); renderer.clear();
+  renderer.render(PORTAL.scene, HOLO.cam);
+}
+
+// ОГРАНИЧЕНИЕ КАДРОВ: без него Ева рисуется с частотой монитора (на 144 Гц - 144 раза в секунду).
+// Спокойно стоит - 30 кадров, говорит/слушает/появляется - 60, спит - 20. Окно свёрнуто - не рисуем.
+// Для проверки можно задать вручную: адрес ?fps=60 (0 - без ограничения).
+const FPS_CAP = { calm: GFX_CFG.calm, active: GFX_CFG.active, sleep: Math.min(20, GFX_CFG.calm) };
+const _fpsQ = _qst.has('fps') ? +_qst.get('fps') : null;
+let _lastDraw = 0;
+function fpsGoal() {
+  if (_fpsQ !== null) return _fpsQ;
+  if (STUDIO || VIEWER) return 0;                         // студия Shorts и просмотрщик - без ограничения
+  if (PORTAL.on || ENTR.on || HOLO.on) return FPS_CAP.active;
+  if (SLEEP.state === 'asleep') return FPS_CAP.sleep;
+  if (['sitting', 'waking', 'lying', 'rising'].includes(SLEEP.state)) return FPS_CAP.active;
+  if (prevState === 'speaking' || prevState === 'listening') return FPS_CAP.active;
+  return FPS_CAP.calm;
+}
+
+function animate(ts) {
+  if (PAUSED) return;        // цикл остановлен; window.setPaused(false) запустит его снова
+  requestAnimationFrame(animate);
+  if (document.hidden && !STUDIO) return;                 // окно свёрнуто или скрыто - видеокарта отдыхает
+  const goal = fpsGoal();
+  if (goal > 0) {
+    const now = ts || performance.now();
+    if (now - _lastDraw < 1000 / goal - 1.5) return;      // ещё рано для следующего кадра
+    _lastDraw = now;
+  }
+  const rawDt = clock.getDelta();
+  if (rawDt > 0.1 && !PAUSED && clock.elapsedTime > 15) {   // много подвисаний подряд = окно рисуется плохо
+    const now = clock.elapsedTime;
+    _stalls.push(now);
+    while (_stalls.length && now - _stalls[0] > 10) _stalls.shift();
+    if (_stalls.length >= 15 && now - _stallReported > 120) {
+      _stallReported = now;
+      console.log('[ОКНО] кадры постоянно подвисают (' + _stalls.length + ' за 10 с) - нужен перезапуск окна');
+    }
+  }
+  if ((DEBUG_FRAMES || JUMP_DEBUG) && rawDt > 0.07 && clock.elapsedTime > 8 && !PAUSED)
+    console.log('[ЗАДЕРЖКА] кадр ' + Math.round(rawDt * 1000) + ' мс; t=' + clock.elapsedTime.toFixed(2) + '; состояние ' + prevState +
+                '; ' + [...activeActions].map(([a, w]) => a.getClip().name.split('/').pop().slice(-24) + ':' + w.toFixed(2)).join(' | '));
+  const dt = Math.min(rawDt, 0.1);
+  if (vrm) {
+    if (mixer) { updateDirector(); updateBlend(dt); mixer.update(VIEWER ? dt * viewer.speed * (viewer.paused ? 0 : 1) : dt); }
+    if (VIEWER) viewerTick();
+    updateWeightShift(dt);
+    introTick(dt);
+    updateLive(dt);
+    solidBody();
+    portalTick(dt);                   // портал: своя поза рук поверх анимации
+    entrTick(dt);                     // случайные появления
+    sleepTick(dt);                    // сон после 10 минут тишины
+    muteVrmExpressions();
+    if (springResetPending && baseAction) {
+      // ждём, пока поза ожидания полностью проявится (fadeIn), затем ставим
+      // волосы в покой от неё, а не от T-позы
+      if (springResetAt === null) springResetAt = clock.elapsedTime + FADE + 0.1;
+      else if (clock.elapsedTime >= springResetAt) {
+        vrm.update(0);
+        vrm.scene.updateMatrixWorld(true);
+        if (vrm.springBoneManager && vrm.springBoneManager.reset) vrm.springBoneManager.reset();
+        springResetPending = false;
+        console.log('Spring Bone: сброшено в позу ожидания');
+      }
+    }
+    vrm.update(Math.min(dt, 1 / 30));  // волосы: после подвисания не «хлещут» (без большого шага физики)
+    updateFace(dt);                   // после vrm.update: VRM не перезапишет наши части лица
+    if (JUMP_DEBUG) jumpCheck(dt);
+    if (STUDIO) { updateCine(dt); updateStage(dt); }
+    if (FACE_CAM) {                   // ?facecam=1 - камера крупно на лицо (для проверки мимики)
+      const h = vrm.humanoid.getNormalizedBoneNode('head').getWorldPosition(new THREE.Vector3());
+      camera.position.set(h.x, h.y + 0.06, h.z + 1.0); camera.lookAt(h.x, h.y + 0.06, h.z);
+    }
+  }
+  if (vrm && contact.ready) updateContactShadow();
+  if (PORTAL.on || ENTR.cut !== null) { portalRender(); return; }
+  if (HOLO.on) {
+    holoTick(dt);
+    if (HOLO.on) {
+      renderer.setRenderTarget(HOLO.rt); renderer.setClearColor(0x000000, 0); renderer.clear();
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null); renderer.clear();
+      renderer.render(HOLO.scene, HOLO.cam);
+      return;
+    }
+  }
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  if (STUDIO) return;
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  if (vrm && !VIEWER) setupCamera();
+});
+</script>
+</body>
+</html>

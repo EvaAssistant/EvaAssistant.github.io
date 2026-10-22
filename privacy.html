@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Политика конфиденциальности — Ева</title>
+<style>
+:root{--bg:#05040f;--card:#0b0f2a;--text:#e9e7ff;--muted:#a9a6d6;--accent:#8b7bff;--pink:#ff63d1;--cyan:#4fd0ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 Inter,"Segoe UI",system-ui,sans-serif}
+main{max-width:820px;margin:0 auto;padding:40px 16px 80px}
+h1{font-size:28px;line-height:1.25;background:linear-gradient(90deg,var(--cyan),var(--accent),var(--pink));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+h2{margin-top:36px;font-size:21px;color:#fff} h3{margin-top:24px;font-size:17px;color:var(--cyan)}
+a{color:var(--cyan)} code{background:#1a1d40;padding:1px 6px;border-radius:6px;font-size:14px}
+blockquote{margin:16px 0;padding:10px 16px;border-left:3px solid var(--pink);background:var(--card);border-radius:8px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:15px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #22264d;vertical-align:top}
+th{color:var(--muted);font-weight:600}
+li{margin:4px 0} .back{display:inline-block;margin-bottom:20px;color:var(--muted);text-decoration:none}
+</style>
+<!-- Yandex.Metrika counter (21.10.2026: посещаемость сайта; вебвизор выключен) -->
+<script type="text/javascript">
+    (function(m,e,t,r,i,k,a){
+        m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+        m[i].l=1*new Date();
+        for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+        k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
+    })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=113707804', 'ym');
+
+    ym(113707804, 'init', {ssr:true, clickmap:true, ecommerce:"dataLayer", referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/113707804" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+<!-- /Yandex.Metrika counter -->
+</head>
+<body><main>
+<a class="back" href="index.html">← На главную</a>
+<h1>Политика конфиденциальности программы «Ева» (бета-версия)</h1>
+<p>Редакция от 16 октября 2026 года.</p>
+<p>«Ева» — голосовой помощник для компьютера с Windows. Здесь простыми словами написано, какие данные
+Ева использует, что остаётся на вашем компьютере, что и кому отправляется через интернет, и как всё это удалить.</p>
+<blockquote>
+<p>⚠️ Это бета-версия. Перед покупкой и релизом документ будет дополнен (оператор данных, контакты, условия продажи).</p>
+</blockquote>
+<h2>1. Коротко</h2>
+<ul>
+<li>Ева <strong>не продаёт</strong> ваши данные. В программе нет рекламы, счётчиков и аналитики (на сайте — только счётчик посещений, см. <a href="#stats">ниже</a>).</li>
+<li>Память Евы, история разговоров, настройки и ключи хранятся <strong>на вашем компьютере</strong>, в папке программы.</li>
+<li>Чтобы понимать речь и отвечать, Ева пользуется <strong>интернет-сервисами</strong> (распознавание речи, нейросеть).
+  Ниже — какими именно и что туда уходит.</li>
+<li>Отчёт о проблеме разработчику уходит <strong>только когда вы сами попросите</strong>: «Ева, сообщи разработчикам…».</li>
+</ul>
+<h2>2. Что остаётся на вашем компьютере</h2>
+<table>
+<thead>
+<tr>
+<th>Что</th>
+<th>Зачем</th>
+<th>Где</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Память о вас (факты, которые вы рассказали)</td>
+<td>чтобы Ева помнила вас</td>
+<td><code>eva_memory.json</code></td>
+</tr>
+<tr>
+<td>История последних разговоров</td>
+<td>чтобы продолжать разговор после перезапуска</td>
+<td>там же</td>
+</tr>
+<tr>
+<td>Образец вашего голоса (числовой «отпечаток»)</td>
+<td>отличать вас от гостей</td>
+<td>папка программы</td>
+</tr>
+<tr>
+<td>Настройки, город, ключи сервисов</td>
+<td>работа программы</td>
+<td><code>eva_settings.json</code>, <code>.env</code></td>
+</tr>
+<tr>
+<td>Журналы работы</td>
+<td>поиск ошибок</td>
+<td><code>eva_log.txt</code>, <code>logs\</code></td>
+</tr>
+<tr>
+<td>Последний снимок экрана/камеры</td>
+<td>если вы просили посмотреть</td>
+<td><code>last_screenshot.jpg</code>, <code>last_camera.jpg</code></td>
+</tr>
+</tbody>
+</table>
+<p>Голос Евы («Голос HD» и обычный) создаётся <strong>на вашем компьютере</strong>.</p>
+<h2>3. Что и куда отправляется через интернет</h2>
+<h3>Микрофон и распознавание речи</h3>
+<ul>
+<li>Пока Ева включена, она слушает микрофон, чтобы услышать своё имя.</li>
+<li>Сейчас распознавание речи выполняет <strong>Google</strong> (бесплатный сервис распознавания).
+  ⚠️ В бета-версии в Google отправляются <strong>все фразы, которые микрофон уловил рядом с компьютером</strong>,
+  а не только обращённые к Еве: так она понимает, звали её или нет.
+  Фразы «не ей» Ева не выполняет, но короткий текст пишет в журнал на компьютере.</li>
+<li>В следующих версиях имя «Ева» будет распознаваться <strong>на компьютере без интернета</strong> («Слух»).
+  Тогда в Google будут уходить только фразы, сказанные Еве.</li>
+<li>Пока Ева говорит сама, записи с микрофона выбрасываются.</li>
+</ul>
+<h3>Нейросеть (ответы Евы)</h3>
+<ul>
+<li>Текст разговора отправляется в нейросеть <strong>Ollama Cloud</strong>, по <strong>вашему</strong> ключу.
+  Вместе с ним уходят: дата и время, ваш город (если указан) и факты из памяти Евы, которые нужны для ответа.</li>
+<li>Если у вас подключён <strong>GigaChat</strong> (Сбер), он может отвечать вместо Ollama.</li>
+</ul>
+<h3>Экран и камера — только по вашей просьбе</h3>
+<ul>
+<li>«Ева, что на экране?» / «что ты видишь?» — один снимок экрана или кадр с камеры отправляется в Ollama Cloud для описания.</li>
+<li>Без вашей просьбы Ева экран и камеру не снимает.</li>
+</ul>
+<h3>Запасной голос</h3>
+<ul>
+<li>Если собственный голос Евы недоступен, текст её ответа озвучивает сервис <strong>Microsoft</strong>: туда уходит текст ответа.</li>
+</ul>
+<h3>Функции, которые вы вызываете сами</h3>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Сервис</th>
+<th>Что уходит</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Погода</td>
+<td>wttr.in, met.no, Open-Meteo, OpenStreetMap</td>
+<td>название города</td>
+</tr>
+<tr>
+<td>Поиск, «что такое…»</td>
+<td>DuckDuckGo, Bing, Яндекс, Википедия</td>
+<td>поисковый запрос</td>
+</tr>
+<tr>
+<td>Курсы валют и криптовалют</td>
+<td>ЦБ РФ (cbr-xml-daily), open.er-api, CoinGecko</td>
+<td>название валюты</td>
+</tr>
+<tr>
+<td>Steam</td>
+<td>Steam Web API</td>
+<td>ваш Steam ID и ключ Steam (если вы их указали)</td>
+</tr>
+<tr>
+<td>Ева в Telegram</td>
+<td>Telegram</td>
+<td>ваши сообщения боту и ответы Евы</td>
+</tr>
+<tr>
+<td>Открыть сайт или YouTube</td>
+<td>ваш браузер</td>
+<td>адрес</td>
+</tr>
+</tbody>
+</table>
+<p>Эти сервисы работают по своим правилам конфиденциальности. Ева передаёт им только то, что нужно для ответа.</p>
+<h2>4. Отчёты о проблемах</h2>
+<ul>
+<li>Отправляются <strong>только по вашей команде</strong>.</li>
+<li>В отчёт входит:</li>
+<li>ваше описание проблемы;</li>
+<li>версия Евы и Windows;</li>
+<li>настройки (без города);</li>
+<li>последние ошибки;</li>
+<li>последние строки журналов Евы, аватара и панели.</li>
+<li>Перед отправкой Ева <strong>вычищает</strong>:</li>
+<li>адреса почты, телефоны, ключи и пароли;</li>
+<li>имя пользователя Windows;</li>
+<li>фразы, сказанные не Еве.</li>
+<li>Отчёт получает только разработчик (через бот поддержки или сайт evaassistant.ru) и использует его,
+  чтобы исправить ошибку. Если связи нет, отчёт ждёт в папке <code>reports</code> и уходит позже.</li>
+</ul>
+<h2>5. Ключи и пароли</h2>
+<p>Ключи сервисов (Ollama, Telegram, Steam) хранятся в файле <code>.env</code> на вашем компьютере.
+Ева не показывает их на экране, не пишет в журналы и не отправляет разработчику.
+<strong>Никому не пересылайте файл <code>.env</code></strong>, даже разработчику.</p>
+<h2>6. Как удалить свои данные</h2>
+<ul>
+<li>Память и историю: удалите файл <code>eva_memory.json</code> в папке программы (Ева начнёт знакомство заново).</li>
+<li>Журналы: удалите <code>eva_log.txt</code> и папку <code>logs</code>.</li>
+<li>Всё сразу: удалите программу и её папку.</li>
+<li>Данные, уже отправленные в сторонние сервисы (Google, Ollama, Microsoft, Telegram), хранятся по их правилам.
+  Удалить их можно только через эти сервисы.</li>
+</ul>
+<h2 id="beta">Анкета бета-тестера на сайте</h2>
+<p>На странице <a href="beta.html">«Бета-тест»</a> можно записаться в тестеры. Анкета работает на сервисе
+<strong>Яндекс Формы</strong> (данные хранятся в России). Мы спрашиваем:</p>
+<ul>
+<li><strong>ник в Telegram</strong> — чтобы написать вам (имя, телефон, почту не спрашиваем);</li>
+<li>характеристики компьютера (видеокарта, процессор, память, версия Windows);</li>
+<li>был ли опыт бета-тестов, что интересно в Еве и сколько времени готовы уделять.</li>
+</ul>
+<p>Зачем: выбрать участников бета-теста и связаться с ними. Ответы видит только разработчик, никому не передаются.
+Храним до конца бета-теста, затем удаляем. Удалить раньше или отозвать согласие — напишите в
+<a href="https://t.me/eva_neuro_support_bot">поддержку Евы в Telegram</a>. Правила участия — <a href="beta_rules.html">здесь</a>.</p>
+<h2 id="stats">Статистика посещений сайта</h2>
+<p>Чтобы понимать, сколько людей заходит на сайт и откуда (YouTube, Telegram, поиск), сайт использует
+<strong>Яндекс Метрику</strong>. Она собирает обезличенные данные: какие страницы открыты, сколько времени на них,
+с какого сайта пришли, тип устройства и браузера, примерный город, и сохраняет в браузере файлы cookie.
+Запись действий на странице (Вебвизор) <strong>выключена</strong>. Имени, телефона и почты Метрика не получает.
+Данные обрабатывает ООО «Яндекс» по своим правилам. Отказаться можно: запретите cookie для этого сайта в браузере
+или поставьте блокировщик счётчиков — сайт будет работать как обычно. Сама программа Ева этот счётчик не использует.</p>
+<h2>7. Дети</h2>
+<p>Ева не предназначена для детей младше 14 лет без присмотра взрослых.</p>
+<h2>8. Изменения и связь</h2>
+<ul>
+<li>Новую редакцию мы опубликуем на сайте и в Telegram-канале, с указанием даты.</li>
+<li>Вопросы:</li>
+<li>сайт https://evaassistant.ru;</li>
+<li>Telegram-канал https://t.me/EvaAssistant_Channel;</li>
+<li>чат https://t.me/Eva_Assistant_chat;</li>
+<li>поддержка (для обращений): https://t.me/eva_neuro_support_bot.</li>
+</ul>
+</main></body></html>
