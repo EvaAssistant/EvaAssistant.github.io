@@ -32,6 +32,8 @@
 </script>
 <noscript><div><img src="https://mc.yandex.ru/watch/113707804" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
 <!-- /Yandex.Metrika counter -->
+<link rel="stylesheet" href="css/theme.css">
+<script src="js/theme.js"></script>
 </head>
 <body class="bg-gray-950 font-inter text-base text-gray-200 antialiased">
 <div class="relative flex min-h-screen flex-col overflow-hidden supports-[overflow:clip]:overflow-clip">
@@ -158,7 +160,7 @@
           <div class="spot-group mx-auto grid max-w-sm items-start gap-6 lg:max-w-none lg:grid-cols-3" id="spot">
             <div class="spot" data-aos>
               <div class="spot-inner">
-                <img class="inline-flex w-full" loading="lazy" src="img/card_eva.jpg" width="350" height="288" alt="3D Eva">
+                <img class="inline-flex w-full" loading="lazy" src="img/card_eva.jpg" data-light="img/card_eva_light.jpg" width="350" height="288" alt="3D Eva">
                 <div class="relative z-10 p-6">
                   <div class="mb-3"><span class="tag"><span>Living avatar</span></span></div>
                   <p class="text-indigo-200/65">A real 3D girl on your desktop. She follows your cursor with her eyes, waves, walks and reacts to what you say.</p>
@@ -167,7 +169,7 @@
             </div>
             <div class="spot" data-aos data-delay="120">
               <div class="spot-inner">
-                <img class="inline-flex w-full" loading="lazy" src="img/card_panel.jpg" width="350" height="288" alt="Eva panel">
+                <img class="inline-flex w-full" loading="lazy" src="img/card_panel.jpg" data-light="img/card_panel_light.jpg" width="350" height="288" alt="Eva panel">
                 <div class="relative z-10 p-6">
                   <div class="mb-3"><span class="tag"><span>Panel</span></span></div>
                   <p class="text-indigo-200/65">A sleek glass panel: what Eva did, weather, reminders, exchange rates — all on one screen.</p>
@@ -176,7 +178,7 @@
             </div>
             <div class="spot" data-aos data-delay="240">
               <div class="spot-inner">
-                <img class="inline-flex w-full" loading="lazy" src="img/card_chat.jpg" width="350" height="288" alt="Chat with Eva">
+                <img class="inline-flex w-full" loading="lazy" src="img/card_chat.jpg" data-light="img/card_chat_light.jpg" width="350" height="288" alt="Chat with Eva">
                 <div class="relative z-10 p-6">
                   <div class="mb-3"><span class="tag"><span>Voice and chat</span></span></div>
                   <p class="text-indigo-200/65">Talk or type. Eva remembers the conversation and can even answer in Telegram when you are away from home.</p>
@@ -205,7 +207,7 @@
           </div>
           <div data-aos class="flex justify-center pb-6 md:pb-14">
             <div class="gborder relative overflow-hidden rounded-2xl shadow-[0_40px_80px_-30px_rgba(139,123,255,.45)]">
-              <img class="w-full max-w-[1104px]" loading="lazy" src="img/panel_full.webp" width="1104" height="751" alt="Eva panel: skills, command result, living orb">
+              <img class="w-full max-w-[1104px]" loading="lazy" src="img/panel_full.webp" data-light="img/panel_full_light.webp" width="1104" height="751" alt="Eva panel: skills, command result, living orb">
             </div>
           </div>
           <div class="mx-auto grid max-w-sm gap-12 sm:max-w-none sm:grid-cols-2 md:gap-x-14 md:gap-y-16 lg:grid-cols-3" id="featGrid"></div>
@@ -390,7 +392,7 @@ const FAQ = [
   ['Something broke — who do I tell?', 'Tell Eva: “Eva, I have a problem.” She collects a description and sends it to the developer.'],
   ['Is it free?', 'During the beta — yes, completely. We will announce the price of the full version before release: one purchase — one computer, no subscription.'],
   ['Does she need internet?', 'Yes. To understand speech and think, Eva uses online services. Without a connection she can do very little for now.'],
-  ['Is Eva eavesdropping on me?', 'Eva listens to the microphone to hear her name. To understand a phrase, she sends it to an online speech recognition service. She does not store audio, and the conversation history stays only on your computer. Details — in the <a style="color:#a5b4fc;text-decoration:underline" href="privacy.html">privacy policy</a> (in Russian).'],
+  ['Is Eva eavesdropping on me?', 'Eva listens to the microphone to hear her name. To understand a phrase, she sends it to an online speech recognition service. She does not store audio, and the conversation history stays only on your computer. Details — in the <a style="color:#a5b4fc;text-decoration:underline" href="privacy_en.html">privacy policy</a>.'],
   ['How do I join the beta?', 'The current beta is in Russian, for testers in Russia. The English version will get its own beta — follow the YouTube channel to hear about it first.'],
 ];
 document.getElementById('faqList').innerHTML = FAQ.map(([q, a]) => `
