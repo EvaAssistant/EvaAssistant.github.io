@@ -127,7 +127,7 @@
                     <button class="chip" data-say="games">And in games?</button>
                     <button class="chip" data-say="sleep">Do you get tired?</button>
                   </div>
-                  <button id="sound" hidden class="mt-4 inline-flex items-center gap-2 text-xs font-medium text-indigo-200/70 transition hover:text-white">
+                  <button id="sound" class="mt-4 inline-flex items-center gap-2 text-xs font-medium text-indigo-200/70 transition hover:text-white">
                     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path class="wv" d="M15.5 8.5a5 5 0 0 1 0 7"/><path class="wv" d="M19 5a10 10 0 0 1 0 14"/><path class="mt" d="m16 9 5 6m0-6-5 6"/></svg>
                     <span id="soundLabel">Voice off</span>
                   </button>
@@ -338,7 +338,7 @@
   </footer>
 </div>
 
-<script src="voice/map.js"></script>
+<script src="voice/map_en.js"></script>
 <script>
 // ===================== возможности =====================
 const FEATURES = [
@@ -426,7 +426,7 @@ const LINES = {
   hello: { t: 'Hi! I am Eva. Ask me anything — I am here.', e: 'joy' },
   who:   { t: 'I am Eva — a living assistant who lives on your desktop. You can simply talk to me.', e: 'joy' },
   can:   { t: 'I remind you of things, set timers, tell the weather, find files and open programs. I can also look at your screen and explain what is there.', e: 'joy' },
-  talk:  { t: 'Just say “Eva” and ask what you need. Away from home? Message me in Telegram from your phone. (For now I speak Russian — English is coming.)', e: 'neutral' },
+  talk:  { t: 'Just say “Eva” and ask what you need. Away from home? Message me in Telegram from your phone. My English version is coming soon!', e: 'neutral' },
   games: { t: 'I stay out of the way in games. But I can give tips and remind you what you have not played on Steam in a while.', e: 'joy' },
   sleep: { t: 'If nobody talks to me for a while, I take a nap in the corner of the screen. Call me and I wake up.', e: 'sorrow' },
   poke:  [{ t: 'Oh! That tickles.', g: 'laugh', e: 'surprised' }, { t: 'I am here! Ask me something.', g: 'wave', e: 'joy' },
@@ -529,7 +529,7 @@ async function say(line, opt = {}) {
 }
 addEventListener('resize', placeBubble);
 document.querySelectorAll('[data-say]').forEach((b) => b.addEventListener('click', () => {
-  // EN: recorded voice is Russian only, so the demo shows text
+  if (!soundOn) { soundOn = true; paintSound(); }            // first question turns the voice on
   document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === b));
   say(LINES[b.dataset.say]);
 }));
