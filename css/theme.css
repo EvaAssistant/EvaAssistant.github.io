@@ -1,0 +1,65 @@
+/* 25.10.2026 Claude-А: светлая тема сайта — как светлая «Аврора» в панели Евы (eva_panel.html):
+   фон #f2f3fb с цветными облаками и шёлковыми лентами (рисует js/theme.js), карточки — жидкое стекло,
+   текст #121127, акцент #1b86da. Включается html[data-theme="light"]; тёмная тема не меняется. */
+html[data-theme="light"]{
+  color-scheme:light;
+  --color-gray-950:#f2f3fb; --color-gray-900:#ffffff; --color-gray-800:rgba(255,255,255,.55); --color-gray-700:rgba(255,255,255,.9);
+  --color-gray-200:rgba(18,17,39,.78); --color-gray-100:#121127; --color-indigo-200:#121127; --color-indigo-400:#1b86da;
+  --lg-tint:rgba(255,255,255,.22); --lg-hi:rgba(255,255,255,.42); --lg-rim:rgba(255,255,255,.95); --lg-rim2:rgba(255,255,255,.55);
+  --lg-shadow:rgba(50,50,120,.16);
+  /* страницы beta / privacy / beta_rules */
+  --bg:#f2f3fb; --card:rgba(255,255,255,.5); --line:rgba(255,255,255,.75); --text:#121127; --muted:rgba(18,17,39,.72);
+  --accent:#1b86da; --cyan:#1b86da;
+}
+html[data-theme="light"] body{background:#f2f3fb !important}
+/* живой фон «Аврора» (canvas из theme.js) — под всем */
+#auroraBg{position:fixed;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none;display:none}
+html[data-theme="light"] #auroraBg{display:block}
+html[data-theme="light"] body > div, html[data-theme="light"] main{background:transparent}
+html[data-theme="light"] img[src*="blurred-shape"],html[data-theme="light"] img[src*="page-illustration"],
+html[data-theme="light"] img[src*="footer-illustration"]{display:none}
+
+/* жидкое стекло, как .lg в панели */
+html[data-theme="light"] header .gborder,html[data-theme="light"] .spot,html[data-theme="light"] .faq,
+html[data-theme="light"] .bg-gray-900\/60,html[data-theme="light"] .bg-gray-900\/80,html[data-theme="light"] #demo > .gborder,
+html[data-theme="light"] .steps li,html[data-theme="light"] blockquote,html[data-theme="light"] .card{
+  background:linear-gradient(180deg,var(--lg-hi),var(--lg-tint)) !important;
+  -webkit-backdrop-filter:blur(14px) saturate(170%);backdrop-filter:blur(14px) saturate(170%);
+  box-shadow:inset 0 0 0 .5px var(--lg-rim2),inset 0 1px 1px var(--lg-rim),0 22px 48px -22px var(--lg-shadow),0 2px 8px -4px var(--lg-shadow) !important;
+  border-color:transparent !important}
+html[data-theme="light"] .spot-inner{background:transparent}
+html[data-theme="light"] .gborder:before{background:linear-gradient(to right,rgba(255,255,255,.9),rgba(255,255,255,.5),rgba(255,255,255,.9)) border-box}
+html[data-theme="light"] .h-grad{background:linear-gradient(90deg,#121127,#2b3a8f,#7a2f86,#121127) 0 0/200%;-webkit-background-clip:text;background-clip:text}
+html[data-theme="light"] .h-brand{background:linear-gradient(90deg,#1b86da,#d63aa8,#6a55e8,#1b86da) 0 0/200%;-webkit-background-clip:text;background-clip:text}
+html[data-theme="light"] .text-indigo-200\/65,html[data-theme="light"] .text-indigo-200\/70{color:rgba(18,17,39,.72)}
+html[data-theme="light"] .text-indigo-200\/40,html[data-theme="light"] .text-indigo-200\/50{color:rgba(18,17,39,.46)}
+html[data-theme="light"] .tag{background-color:rgba(255,255,255,.55);box-shadow:inset 0 0 0 .5px rgba(255,255,255,.9)}
+html[data-theme="light"] .divider{border-image:linear-gradient(90deg,#0000,rgba(18,17,39,.14),#0000) 1}
+html[data-theme="light"] .btn-ghost{color:#121127;background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(255,255,255,.4));
+  box-shadow:inset 0 0 0 .5px rgba(255,255,255,.9),0 8px 20px -12px rgba(50,50,120,.25)}
+html[data-theme="light"] #demo img[src*="hero_"]{display:none}
+html[data-theme="light"] #demo .bg-gradient-to-r{display:none}
+html[data-theme="light"] #demo .text-white{color:#121127}
+html[data-theme="light"] .chip{background:linear-gradient(180deg,rgba(255,255,255,.6),rgba(255,255,255,.3));color:#121127;
+  box-shadow:inset 0 0 0 .5px rgba(255,255,255,.9),0 6px 16px -10px rgba(50,50,120,.3)}
+html[data-theme="light"] .chip:hover{background:rgba(255,255,255,.85);color:#121127}
+html[data-theme="light"] .chip.on{color:#121127;box-shadow:inset 0 0 0 1.5px #d63aa8,0 0 18px rgba(214,58,168,.25)}
+html[data-theme="light"] .bubble{background:rgba(255,255,255,.92);color:#121127;box-shadow:inset 0 0 0 .5px #fff,0 18px 40px -16px rgba(50,50,120,.35)}
+html[data-theme="light"] h1:not(.h-grad){background:linear-gradient(90deg,#121127,#2b3a8f,#7a2f86);-webkit-background-clip:text;background-clip:text;color:transparent}
+html[data-theme="light"] h2:not([class]){color:#121127}
+html[data-theme="light"] h3:not([class]){color:#1b86da}
+html[data-theme="light"] td{border-bottom-color:rgba(18,17,39,.1)}
+html[data-theme="light"] a:not([class]){color:#1b86da}
+html[data-theme="light"] code{background:rgba(255,255,255,.6) !important;color:#121127}
+html[data-theme="light"] .pill{background:rgba(255,255,255,.55);border-color:rgba(255,255,255,.9)}
+/* кнопка темы */
+.theme-btn{position:fixed;left:16px;bottom:16px;z-index:70;width:44px;height:44px;border-radius:50%;border:1px solid rgba(139,123,255,.45);
+  background:rgba(17,16,40,.9);color:#fff;font-size:20px;line-height:1;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+html[data-theme="light"] .theme-btn{background:linear-gradient(180deg,rgba(255,255,255,.8),rgba(255,255,255,.5));color:#121127;border-color:rgba(255,255,255,.9);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 8px 24px rgba(50,50,120,.2)}
+html[data-theme="light"] #featGrid svg{stroke:#1b86da}
+html[data-theme="light"] .eyebrow span{color:#6a55e8}
+html[data-theme="light"] .tag span{background:none !important;-webkit-text-fill-color:#6a55e8;color:#6a55e8}
+html[data-theme="light"] #roadmap span[style]{color:#121127 !important;-webkit-text-fill-color:#121127}
+html[data-theme="light"] .spot-inner:after{background:linear-gradient(to bottom right,rgba(255,255,255,.18),rgba(255,255,255,0),rgba(255,255,255,.18))}
+html[data-theme="light"] .spot:before{background:rgba(79,140,255,.35)}
