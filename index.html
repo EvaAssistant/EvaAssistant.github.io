@@ -282,7 +282,7 @@
           <div class="mx-auto max-w-3xl text-center">
             <h2 data-aos class="h-grad pb-4 font-display text-3xl font-semibold md:text-4xl">Ева уже ждёт встречи</h2>
             <p data-aos class="mb-8 text-lg text-indigo-200/65">Бета Евы для Windows. Скачай установщик, установи Еву и проверь обновления в настройках. Для участия нужен личный бета-ключ.</p>
-            <p class="mb-6 text-sm text-indigo-200/65">Базовый установщик 0.9.9-beta · 457 МБ. После установки: «Настройки → Обновления → Проверить». Нет ключа? <a class="underline" href="beta.html">Записаться в бета-тест</a>.</p>
+            <p class="mb-6 text-sm text-indigo-200/65"><span data-eva-install-info>Базовый установщик 0.9.9-beta · 457 МБ. После установки: «Настройки → Обновления → Проверить».</span> Нет ключа? <a class="underline" href="beta.html">Записаться в бета-тест</a>.</p>
             <div class="mx-auto max-w-xs sm:flex sm:max-w-none sm:justify-center">
               <div data-aos data-delay="150"><a class="btn btn-main group mb-4 w-full sm:mb-0 sm:w-auto" href="https://github.com/EvaAssistant/eva-download/releases/download/v0.9.10-beta/Eva_Setup_0.9.9-beta.exe" data-eva-get>Скачать бету <span class="ml-1 text-white/60 transition-transform group-hover:translate-x-0.5">-&gt;</span></a></div>
               <div data-aos data-delay="300"><a class="btn btn-ghost gborder w-full sm:ml-4 sm:w-auto" href="https://t.me/EvaAssistant_Channel" target="_blank" rel="noopener">Канал в Telegram</a></div>
@@ -557,6 +557,90 @@ document.querySelectorAll('[data-soon]').forEach((a) => a.addEventListener('clic
     document.body.appendChild(b);
   } catch (e) {}
 })();
+</script>
+<script data-eva-auto-download>
+/* EVA website installer resolver. Inline this into index.html; no build/runtime dependency.
+ * Select the newest published INSTALLER version, not the newest update-only release.
+ * Keep immutable versioned assets used by signed updates. No code or secret uploads.
+ */
+(function () {
+  'use strict';
+  var links = Array.from(document.querySelectorAll('[data-eva-get]'));
+  if (!links.length) return;
+  var api = 'https://api.github.com/repos/EvaAssistant/eva-download/releases?per_page=100';
+
+  function candidate(asset) {
+    if (!asset || typeof asset.name !== 'string' || asset.state !== 'uploaded' ||
+        !Number.isFinite(asset.size) || asset.size < 2) return null;
+    var match = /^Eva_Setup_(\d+\.\d+\.\d+(?:\.\d+)?)(?:-([a-zA-Z0-9][a-zA-Z0-9.-]*))?\.exe$/.exec(asset.name);
+    if (!match) return null; // excludes updates, source, developer and old separate beta installers
+    try {
+      var url = new URL(asset.browser_download_url);
+      if (url.protocol !== 'https:' || url.host !== 'github.com' || url.username || url.password ||
+          url.search || url.hash || !url.pathname.startsWith('/EvaAssistant/eva-download/releases/download/') ||
+          decodeURIComponent(url.pathname.split('/').pop()) !== asset.name) return null;
+      return {url: url.href, version: match[1] + (match[2] ? '-' + match[2] : ''),
+        parts: match[1].split('.').map(Number), suffix: match[2] || '', size: asset.size};
+    } catch (_) { return null; }
+  }
+  function compare(a, b) {
+    for (var i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
+      var delta = (a.parts[i] || 0) - (b.parts[i] || 0);
+      if (delta) return delta;
+    }
+    if (!a.suffix && b.suffix) return 1;
+    if (a.suffix && !b.suffix) return -1;
+    return a.suffix.localeCompare(b.suffix, 'en', {numeric: true});
+  }
+  function find(releases) {
+    if (!Array.isArray(releases)) throw Error('invalid releases');
+    var best = null;
+    releases.forEach(function (release) {
+      if (!release || release.draft || release.prerelease || !Array.isArray(release.assets)) return;
+      release.assets.forEach(function (asset) {
+        var item = candidate(asset);
+        if (item && (!best || compare(item, best) > 0)) best = item;
+      });
+    });
+    if (!best) throw Error('no installer');
+    return best;
+  }
+
+  var settled = false;
+  links.forEach(function (a) { a.setAttribute('aria-busy', 'true'); });
+  var controller = new AbortController();
+  var timer = setTimeout(function () { controller.abort(); }, 5000);
+  var ready = fetch(api, {cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal})
+    .then(function (response) { if (!response.ok) throw Error('github unavailable'); return response.json(); })
+    .then(find)
+    .then(function (item) {
+      links.forEach(function (a) {
+        a.href = item.url; a.setAttribute('download', '');
+        a.dataset.installerVersion = item.version;
+      });
+      document.querySelectorAll('[data-eva-install-info]').forEach(function (el) {
+        // textContent only: never interpret release descriptions/asset names as HTML.
+        el.textContent = 'Установщик ' + item.version + ' · ' + Math.round(item.size / 1048576) +
+          ' МБ. После установки: «Настройки → Обновления → Проверить».';
+      });
+    })
+    .catch(function () {
+      // The static href stays a known working baseline installer if GitHub API is unavailable.
+      links.forEach(function (a) { a.dataset.installerFallback = 'true'; });
+    })
+    .finally(function () {
+      clearTimeout(timer); settled = true;
+      links.forEach(function (a) { a.removeAttribute('aria-busy'); });
+    });
+  links.forEach(function (a) {
+    a.addEventListener('click', function (event) {
+      if (settled || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      ready.then(function () { window.location.assign(a.href); });
+    });
+  });
+})();
+
 </script>
 </body>
 </html>
