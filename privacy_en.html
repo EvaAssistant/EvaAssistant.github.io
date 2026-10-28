@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Eva privacy policy (beta)</title>
+<title>Privacy Policy — Eva</title>
 <style>
 :root{--bg:#05040f;--card:#0b0f2a;--text:#e9e7ff;--muted:#a9a6d6;--accent:#8b7bff;--pink:#ff63d1;--cyan:#4fd0ff}
 *{box-sizing:border-box}
@@ -37,57 +37,55 @@ li{margin:4px 0} .back{display:inline-block;margin-bottom:20px;color:var(--muted
 </head>
 <body><main>
 <a class="back" href="en.html">← Back to home</a>
-<h1>Privacy policy of the “Eva” app (beta)</h1>
-<p>Version of October 16, 2026. This is a translation; the <a href="privacy.html" hreflang="ru">Russian version</a> is the official one.</p>
-<p>“Eva” is a voice assistant for Windows computers. Here we explain in plain words what data Eva uses, what stays on your computer,
-what is sent over the internet and to whom, and how to delete it all.</p>
-<blockquote>
-<p>⚠️ This is a beta version. Before sales and release, this document will be extended (data controller, contacts, terms of sale).</p>
-</blockquote>
+<h1>Eva Privacy Policy</h1>
+<p>Version of 28 October 2026. This is an English translation; in case of any discrepancy the <a href="privacy.html" hreflang="ru">Russian version</a> prevails.</p>
+<p>Eva is a voice assistant for Windows computers. This page explains in plain words what data Eva uses, what stays on your computer, what is sent over the internet and to whom, and how to delete it all.</p>
+<h2>Who processes the data</h2>
+<p>Data controller: Skiba Roman Petrovich, self-employed (professional income tax payer, Russian Federation), taxpayer ID (INN) 245510439490.
+Contact e-mail: <a href="mailto:evaassistant.help@yandex.com">evaassistant.help@yandex.com</a>. Purchase terms: <a href="terms_en.html">Terms of Service</a>.</p>
 <h2>1. In short</h2>
 <ul>
-<li>Eva <strong>does not sell</strong> your data. The app has no ads, trackers or analytics (the website has only a visit counter, see <a href="#stats">below</a>).</li>
-<li>Eva’s memory, conversation history, settings and keys are stored <strong>on your computer</strong>, in the app folder.</li>
-<li>To understand speech and answer, Eva uses <strong>online services</strong> (speech recognition, a neural network). Below — which ones and what is sent there.</li>
-<li>A problem report is sent to the developer <strong>only when you ask for it</strong>: “Eva, tell the developers…”.</li>
+<li>Eva <strong>does not sell</strong> your data. The program has no ads, trackers or analytics (the website only has a visit counter, see <a href="#stats">below</a>).</li>
+<li>Eva's memory, conversation history, settings and keys are stored <strong>on your computer</strong>, in the program folder.</li>
+<li>To understand speech and answer, Eva uses <strong>online services</strong> (speech recognition, a neural network). Which ones and what is sent is described below.</li>
+<li>A problem report is sent to the developer <strong>only when you ask for it</strong>: “Eva, report to the developers…”.</li>
 </ul>
 <h2>2. What stays on your computer</h2>
 <table>
 <thead><tr><th>What</th><th>Why</th><th>Where</th></tr></thead>
 <tbody>
-<tr><td>Memory about you (facts you told her)</td><td>so Eva remembers you</td><td><code>eva_memory.json</code></td></tr>
+<tr><td>Memory about you (facts you told Eva)</td><td>so Eva remembers you</td><td><code>eva_memory.json</code></td></tr>
 <tr><td>Recent conversation history</td><td>to continue the conversation after a restart</td><td>same file</td></tr>
-<tr><td>A sample of your voice (a numeric “fingerprint”)</td><td>to tell you apart from guests</td><td>app folder</td></tr>
-<tr><td>Settings, city, service keys</td><td>for the app to work</td><td><code>eva_settings.json</code>, <code>.env</code></td></tr>
-<tr><td>Work logs</td><td>to find errors</td><td><code>eva_log.txt</code>, <code>logs\</code></td></tr>
-<tr><td>Last screenshot / camera frame</td><td>if you asked her to look</td><td><code>last_screenshot.jpg</code>, <code>last_camera.jpg</code></td></tr>
+<tr><td>Your voice sample (a numeric “fingerprint”)</td><td>to tell you apart from guests</td><td>program folder</td></tr>
+<tr><td>Settings, city, service keys</td><td>for the program to work</td><td><code>eva_settings.json</code>, <code>.env</code></td></tr>
+<tr><td>Logs</td><td>to find errors</td><td><code>eva_log.txt</code>, <code>logs\</code></td></tr>
+<tr><td>Last screenshot / camera frame</td><td>if you asked Eva to look</td><td><code>last_screenshot.jpg</code>, <code>last_camera.jpg</code></td></tr>
 </tbody>
 </table>
-<p>Eva’s voice (“HD Voice” and the regular one) is generated <strong>on your computer</strong>.</p>
+<p>Eva's voice (“HD voice” and the standard one) is generated <strong>on your computer</strong>.</p>
 <h2>3. What is sent over the internet, and where</h2>
 <h3>Microphone and speech recognition</h3>
 <ul>
 <li>While Eva is on, she listens to the microphone to hear her name.</li>
 <li>Speech recognition is currently done by <strong>Google</strong> (a free recognition service).
-  ⚠️ In the beta, <strong>all phrases the microphone picks up near the computer</strong> are sent to Google, not only those addressed to Eva:
-  this is how she understands whether she was called. Eva does not act on phrases not meant for her, but writes a short text to the log on your computer.</li>
-<li>In future versions the name “Eva” will be recognized <strong>on the computer, without internet</strong> (“Hearing”). Then only phrases said to Eva will go to Google.</li>
-<li>While Eva is speaking herself, microphone recordings are discarded.</li>
+  ⚠️ In the beta version, <strong>all phrases the microphone picks up near the computer</strong> are sent to Google, not only those addressed to Eva: this is how she understands whether she was called.
+  Eva does not act on phrases not meant for her, but writes a short text of them to the log on your computer.</li>
+<li>In future versions the name “Eva” will be recognised <strong>on the computer without the internet</strong>. Then only phrases said to Eva will go to Google.</li>
+<li>While Eva is speaking, microphone recordings are discarded.</li>
 </ul>
-<h3>Neural network (Eva’s answers)</h3>
+<h3>Neural network (Eva's answers)</h3>
 <ul>
-<li>The conversation text is sent to the <strong>Ollama Cloud</strong> neural network, using <strong>your</strong> key.
-  Along with it go: date and time, your city (if set) and facts from Eva’s memory needed for the answer.</li>
+<li>The conversation text is sent to the <strong>Ollama Cloud</strong> neural network using <strong>your own</strong> key. Together with it go the date and time, your city (if set) and the facts from Eva's memory needed for the answer.</li>
 <li>If you have connected <strong>GigaChat</strong> (Sber), it may answer instead of Ollama.</li>
 </ul>
 <h3>Screen and camera — only when you ask</h3>
 <ul>
-<li>“Eva, what’s on the screen?” / “what do you see?” — one screenshot or camera frame is sent to Ollama Cloud to be described.</li>
-<li>Eva does not capture the screen or camera unless you ask.</li>
+<li>“Eva, what's on the screen?” / “what do you see?” — one screenshot or camera frame is sent to Ollama Cloud to be described.</li>
+<li>Eva does not capture the screen or camera without your request.</li>
 </ul>
 <h3>Backup voice</h3>
 <ul>
-<li>If Eva’s own voice is unavailable, the text of her answer is voiced by a <strong>Microsoft</strong> service: the answer text is sent there.</li>
+<li>If Eva's own voice is unavailable, the text of her answer is voiced by a <strong>Microsoft</strong> service: the answer text is sent there.</li>
 </ul>
 <h3>Features you call yourself</h3>
 <table>
@@ -95,9 +93,9 @@ what is sent over the internet and to whom, and how to delete it all.</p>
 <tbody>
 <tr><td>Weather</td><td>wttr.in, met.no, Open-Meteo, OpenStreetMap</td><td>city name</td></tr>
 <tr><td>Search, “what is…”</td><td>DuckDuckGo, Bing, Yandex, Wikipedia</td><td>search query</td></tr>
-<tr><td>Currency and crypto rates</td><td>Bank of Russia (cbr-xml-daily), open.er-api, CoinGecko</td><td>currency name</td></tr>
+<tr><td>Currency and crypto rates</td><td>Central Bank of Russia (cbr-xml-daily), open.er-api, CoinGecko</td><td>currency name</td></tr>
 <tr><td>Steam</td><td>Steam Web API</td><td>your Steam ID and Steam key (if you provided them)</td></tr>
-<tr><td>Eva in Telegram</td><td>Telegram</td><td>your messages to the bot and Eva’s replies</td></tr>
+<tr><td>Eva in Telegram</td><td>Telegram</td><td>your messages to the bot and Eva's replies</td></tr>
 <tr><td>Open a website or YouTube</td><td>your browser</td><td>the address</td></tr>
 </tbody>
 </table>
@@ -105,57 +103,54 @@ what is sent over the internet and to whom, and how to delete it all.</p>
 <h2>4. Problem reports</h2>
 <ul>
 <li>Sent <strong>only on your command</strong>.</li>
-<li>A report includes:</li>
-<li>your description of the problem;</li>
-<li>Eva and Windows versions;</li>
-<li>settings (without the city);</li>
-<li>recent errors;</li>
-<li>the last lines of the Eva, avatar and panel logs.</li>
-<li>Before sending, Eva <strong>removes</strong>:</li>
-<li>email addresses, phone numbers, keys and passwords;</li>
-<li>the Windows user name;</li>
-<li>phrases not addressed to Eva.</li>
-<li>Only the developer receives the report (via the support bot or the evaassistant.ru website) and uses it to fix the error.
-  If there is no connection, the report waits in the <code>reports</code> folder and is sent later.</li>
+<li>A report contains: your description of the problem; Eva and Windows versions; settings (without your city); recent errors; the last lines of Eva, avatar and panel logs.</li>
+<li>Before sending, Eva <strong>removes</strong>: e-mail addresses, phone numbers, keys and passwords; your Windows user name; phrases not addressed to Eva.</li>
+<li>Only the developer receives the report (via the support bot or evaassistant.ru) and uses it to fix the error. If there is no connection, the report waits in the <code>reports</code> folder and is sent later.</li>
 </ul>
 <h2>5. Keys and passwords</h2>
-<p>Service keys (Ollama, Telegram, Steam) are stored in the <code>.env</code> file on your computer.
-Eva does not show them on screen, does not write them to logs and does not send them to the developer.
-<strong>Never send the <code>.env</code> file to anyone</strong>, not even the developer.</p>
+<p>Service keys (Ollama, Telegram, Steam) are stored in the <code>.env</code> file on your computer. Eva does not show them on screen, does not write them to logs and does not send them to the developer.
+<strong>Never send the <code>.env</code> file to anyone</strong>, not even to the developer.</p>
 <h2>6. How to delete your data</h2>
 <ul>
-<li>Memory and history: delete <code>eva_memory.json</code> in the app folder (Eva will get to know you again).</li>
+<li>Memory and history: delete <code>eva_memory.json</code> in the program folder (Eva will start getting to know you again).</li>
 <li>Logs: delete <code>eva_log.txt</code> and the <code>logs</code> folder.</li>
-<li>Everything at once: uninstall the app and delete its folder.</li>
-<li>Data already sent to third-party services (Google, Ollama, Microsoft, Telegram) is kept under their rules and can be deleted only through those services.</li>
+<li>Everything at once: uninstall the program and delete its folder.</li>
+<li>Data already sent to third-party services (Google, Ollama, Microsoft, Telegram) is kept under their rules and can only be deleted through those services.</li>
 </ul>
 <h2 id="beta">Beta tester form on the website</h2>
-<p>On the <a href="beta.html">“Beta test”</a> page (in Russian) you can sign up as a tester. The form runs on
-<strong>Yandex Forms</strong> (data is stored in Russia). We ask for:</p>
+<p>On the <a href="beta.html" hreflang="ru">“Beta test”</a> page (in Russian) you can sign up as a tester. The form runs on <strong>Yandex Forms</strong> (data is stored in Russia). We ask for:</p>
 <ul>
-<li>your <strong>Telegram username</strong> — to contact you (we do not ask for name, phone or email);</li>
+<li>your <strong>Telegram nickname</strong> — to contact you (we do not ask for your name, phone or e-mail);</li>
 <li>computer specs (graphics card, processor, memory, Windows version);</li>
-<li>whether you have beta testing experience, what interests you in Eva and how much time you can spend.</li>
+<li>beta testing experience, what interests you in Eva and how much time you can give.</li>
 </ul>
-<p>Why: to choose beta participants and contact them. Only the developer sees the answers; they are not shared with anyone.
-We keep them until the end of the beta test, then delete them. To delete them earlier or withdraw consent, write to
-<a href="https://t.me/eva_neuro_support_bot">Eva support in Telegram</a>. Participation rules are <a href="beta_rules.html">here</a> (in Russian).</p>
+<p>Purpose: to select beta participants and contact them. Only the developer sees the answers; they are not shared. We keep them until the end of the beta, then delete them. To delete them earlier or withdraw consent, write to <a href="https://t.me/eva_neuro_support_bot">Eva support in Telegram</a>.</p>
 <h2 id="stats">Website visit statistics</h2>
-<p>To understand how many people visit the website and where they come from (YouTube, Telegram, search), the website uses
-<strong>Yandex Metrica</strong>. It collects anonymized data: which pages are opened, how long they are viewed,
-which site the visitor came from, device and browser type, approximate city, and stores cookies in the browser.
-Session recording (Webvisor) is <strong>turned off</strong>. Metrica does not receive your name, phone or email.
-The data is processed by Yandex LLC under its own rules. You can opt out: block cookies for this website in your browser
-or use a tracker blocker — the website will work as usual. The Eva app itself does not use this counter.</p>
+<p>To understand how many people visit the site and where they come from (YouTube, Telegram, search), the site uses <strong>Yandex Metrica</strong>. It collects anonymised data: pages opened, time spent, referring site, device and browser type, approximate city, and stores cookies in your browser.
+Session recording (Webvisor) is <strong>turned off</strong>. Metrica does not receive your name, phone or e-mail. The data is processed by Yandex LLC under its own rules.
+You can opt out: block cookies for this site in your browser or use a tracker blocker — the site will work as usual. The Eva program itself does not use this counter.</p>
+<h2>Buying a subscription</h2>
+<p>When you buy a subscription on the website or in the “Store” tab in Eva, we process:</p>
+<ul>
+<li>your e-mail — if you provided it, to send you the key and the receipt;</li>
+<li>order number, plan, term, amount, payment date and status;</li>
+<li>the key number and the number of computers it is activated on (for this Eva sends an anonymised computer identifier to our server).</li>
+</ul>
+<p>Purpose: to issue the key, create the receipt, answer your requests and process refunds — that is, to perform the contract under the <a href="terms_en.html">Terms of Service</a>.
+We do not receive or store bank card data — payment is handled by the Robokassa payment service under its own rules. The receipt is created in the Russian tax service app “Moy Nalog” and transmitted to the tax authority.</p>
+<p>Order data is stored on the project server in Russia only as long as needed to perform the contract and meet legal requirements. We do not share it with third parties other than the payment service and the tax authority, to the extent needed for payment and the receipt.</p>
+<h2>Your rights</h2>
+<p>You can find out what data we hold about you, ask us to correct or delete it, or withdraw your consent — write to <a href="mailto:evaassistant.help@yandex.com">evaassistant.help@yandex.com</a>. We reply within 10 business days.
+Records of completed payments may be kept longer if the law requires it.</p>
 <h2>7. Children</h2>
 <p>Eva is not intended for children under 14 without adult supervision.</p>
 <h2>8. Changes and contact</h2>
 <ul>
-<li>We will publish a new version on the website and in the Telegram channel, with the date.</li>
-<li>Questions:</li>
-<li>website https://evaassistant.ru;</li>
-<li>Telegram channel https://t.me/EvaAssistant_Channel;</li>
-<li>chat https://t.me/Eva_Assistant_chat;</li>
-<li>support (for requests): https://t.me/eva_neuro_support_bot.</li>
+<li>We will publish a new version on the website and in the Telegram channel, with its date.</li>
+<li>Website: https://evaassistant.ru</li>
+<li>Telegram channel: https://t.me/EvaAssistant_Channel</li>
+<li>Chat: https://t.me/Eva_Assistant_chat</li>
+<li>Support: https://t.me/eva_neuro_support_bot</li>
+<li>E-mail: <a href="mailto:evaassistant.help@yandex.com">evaassistant.help@yandex.com</a></li>
 </ul>
 </main></body></html>
